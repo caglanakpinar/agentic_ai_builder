@@ -9,7 +9,14 @@ license = {text = "MIT"}
 readme = "README.md"
 requires-python = "^3.10"
 dependencies = [
-    "pyyaml (>=6.0.3,<7.0.0)"
+    "pyyaml (>=6.0.3,<7.0.0)",
+    "anthropic (>=0.120.2,<0.121.0)",
+    "openai (>=2.52.0,<3.0.0)",
+    "google-genai (>=2.16.0,<3.0.0)",
+    "huggingface-hub (>=1.26.0,<2.0.0)",
+    "mistralai (>=2.8.0,<3.0.0)",
+    "torch (>=2.13.0,<3.0.0)",
+    "transformers (>=5.14.1,<6.0.0)"
 ]
 
 
