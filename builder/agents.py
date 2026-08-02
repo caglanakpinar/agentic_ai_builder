@@ -6,8 +6,8 @@ from builder.tools import ToolBox
 from models.llms import BaseLLM
 from uilts.configs import AgentConfigs
 from uilts.logger import logger
-from db_connector.vector import BaseVectorConnector
-from db_connector.text import BaseTextConnector
+from db_connector.vector import BaseVectorDB
+from db_connector.text import BaseTextDB
 from models.embeddings import BaseEmbeddings
 
 
@@ -153,8 +153,8 @@ class RAGBuilderAgent(BaseAgent):
     prompt_name: str = "rag_builder"
 
     def __init__(self, *args: Any, db_vector_connector: Any = None, db_text_connector: Any = None, embeddings_connector: Any = None, **kwargs: Any) -> None:
-        self.db_vector_connector: BaseVectorConnector = db_vector_connector
-        self.db_text_connector: BaseTextConnector = db_text_connector
+        self.db_vector_connector: BaseVectorDB = db_vector_connector
+        self.db_text_connector: BaseTextDB = db_text_connector
         self.embeddings_connector: BaseEmbeddings = embeddings_connector  # Placeholder for future use if needed
         super().__init__(*args, **kwargs)
 

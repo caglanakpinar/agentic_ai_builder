@@ -120,13 +120,27 @@ class Configs:
     tool_configs: dict[str, ToolConfigs] = {}
 
     def __init__(self, current_filename: str):
-        self.current_dir = Path(__file__).parent  / current_filename
+        self.current_dir = self.resolve_dir(current_filename)
         self.read_yaml()
         self.db_configer()
         self.llm_configer()
         self.embeddings_configer()
         self.tool_configer()
         self.agent_configer()
+
+    @staticmethod
+    def resolve_dir(current_filename: str) -> Path:
+        """Locate the directory holding the YAML config.
+
+        A path that exists as given — absolute, or relative to where the command was run — is taken as
+        it is, which is how the CLI points at a config directory in the user's own project. Anything
+        else falls back to being read relative to this package.
+        """
+        given = Path(current_filename)
+        if given.is_dir():
+            return given
+
+        return Path(__file__).parent / current_filename
 
     def read_yaml(self):
         for file in self.current_dir.glob("*.yaml"):
@@ -166,10 +180,12 @@ class Configs:
                 )
 
     def llm_configer(self):
-        if 'llm' in self.__dict__:
-            for llm_name, llm_cfg in self.llm.items():
+        """Parse the `llms:` block (also accepted as `llm:`), keyed by the name agents reference."""
+        llms = self.__dict__.get('llms', self.__dict__.get('llm'))
+        if llms:
+            for llm_name, llm_cfg in llms.items():
                 self.llm_configs[llm_name] = LLMConfigs(
-                    model_name=llm_cfg.get('model_name', ''),
+                    model_name=llm_cfg.get('model_name', llm_cfg.get('model', '')),
                     temperature=llm_cfg.get('temperature', 0.0),
                     max_tokens=llm_cfg.get('max_tokens', 0),
                     api_key=llm_cfg.get('api_key', ''),
@@ -182,7 +198,7 @@ class Configs:
         if 'embeddings' in self.__dict__:
             for embedding_name, embedding_cfg in self.embeddings.items():
                 self.embeddings_configs[embedding_name] = EmbeddingsConfigs(
-                    model_name=embedding_cfg.get('model_name', ''),
+                    model_name=embedding_cfg.get('model_name', embedding_cfg.get('model', '')),
                     api_key=embedding_cfg.get('api_key', '')
                 )
 

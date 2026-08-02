@@ -9,6 +9,7 @@ license = {text = "MIT"}
 readme = "README.md"
 requires-python = "^3.10"
 dependencies = [
+    "click (>=8.1.0,<9.0.0)",
     "pyyaml (>=6.0.3,<7.0.0)",
     "anthropic (>=0.120.2,<0.121.0)",
     "openai (>=2.52.0,<3.0.0)",
@@ -18,6 +19,9 @@ dependencies = [
     "torch (>=2.13.0,<3.0.0)",
     "transformers (>=5.14.1,<6.0.0)"
 ]
+
+[project.scripts]
+agentic-ai = "cli:cli"
 
 # Database drivers are optional: db_connector imports them lazily, so you only install the engines you
 # actually use, e.g. `poetry install --extras "postgres chroma"` or `--extras all`.
@@ -61,6 +65,18 @@ all = [
     "typesense (>=0.21.0,<2.0.0)",
 ]
 
+
+# The project is a set of top-level modules rather than one src package, so they are listed explicitly
+# — without this the `agentic-ai` script installs with nothing to import.
+[tool.poetry]
+packages = [
+    { include = "agent_builder.py" },
+    { include = "cli.py" },
+    { include = "builder" },
+    { include = "db_connector" },
+    { include = "models" },
+    { include = "uilts" },
+]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
