@@ -1,9 +1,10 @@
 
 from abc import abstractmethod
+import os
 from typing import Any
 
 from openai import OpenAI
-from mistralai import Mistral
+from mistralai.client import Mistral
 from huggingface_hub import InferenceClient
 from google import genai
 from google.genai import types as genai_types
@@ -37,7 +38,19 @@ class BaseEmbeddings(EmbeddingsConfigs):
 
     def __init__(self, model_name: str, api_key: str, **kwargs: Any) -> None:
         super().__init__(model_name=model_name, api_key=api_key)
+        self.api_key_checker()
         self._initialize_model(**kwargs)
+
+    def api_key_checker(self) -> str:
+        """Resolve `api_key` as either an environment variable name or a literal key value."""
+        if self.api_key and os.getenv(self.api_key):
+            self.api_key = os.getenv(self.api_key)
+
+        if not self.api_key:
+            logger.error(f"No API key or environment variable name provided for {self.model_name}.")
+            raise ValueError(
+                f"No API key or environment variable name provided for {self.model_name}."
+            )
 
     @abstractmethod
     def _initialize_model(self, **kwargs: Any) -> None:

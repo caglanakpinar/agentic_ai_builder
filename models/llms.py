@@ -9,7 +9,7 @@ from urllib import request
 import anthropic
 import torch
 from openai import OpenAI
-from mistralai import Mistral
+from mistralai.client import Mistral
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 from huggingface_hub import InferenceClient
 from google import genai
@@ -67,7 +67,23 @@ class BaseLLM(LLMConfigs):
             type=type,
             mcp_servers=mcp_servers
         )
+        self.api_key_checker()
         self._initialize_model(**kwargs)
+
+    def api_key_checker(self) -> str:
+        """Resolve `api_key` as either an environment variable name or a literal key value.
+
+        Tries `api_key` as an environment variable name first; if that's unset, falls back to
+        treating `api_key` itself as the literal key. Raises if neither is available.
+        """
+        if os.getenv(self.api_key):
+            self.api_key = os.getenv(self.api_key)
+
+        if not self.api_key:
+            logger.error(f"No API key or environment variable name provided for {self.model_name}.")
+            raise ValueError(
+                f"Missing API key for {self.model_name}: provide a direct key or an environment variable name."
+            )
 
     @abstractmethod
     def _initialize_model(self, **kwargs: Any) -> None:
