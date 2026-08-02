@@ -1,5 +1,4 @@
-from dataclasses import dataclass
-from logging import config
+from dataclasses import dataclass, field
 from pathlib import Path
 import yaml
 
@@ -16,6 +15,17 @@ class LLMConfigs:
 
 
 @dataclass
+class AgentConfigs:
+    responsiblity_prompt: str
+    tools: list[dict[str, str]] | None = None
+    type: str = "generator" # options are "generator" or "retriever", "tool caller", "tool generator"
+    mcp_servers: list[str] | None = None
+    llms: dict[str, LLMConfigs] | None = None
+    db: str | None = None  # name of the vector/knowledge db this agent retrieves from, e.g. "ds_knowledge_db"
+    prompt: str | None = None  # directory (relative to Configs.current_dir) containing one file per prompt, e.g. "prompts/rag_problem_thinker_agent"
+    arguments: list[str] = field(default_factory=list)  # prompt names discovered in `prompt`, filled in by BasePrompt.prompt_configer
+
+@dataclass
 class VectorDBConfigs:
     host: str
     port: int
@@ -29,55 +39,94 @@ class EmbeddingsConfigs:
     api_key: str
 
 
+@dataclass
+class ToolConfigs:
+    name: str
+    description: str
+    type: str  # options are "generator" or "retriever", "tool caller", "tool generator"
+    llm: str | None = None
+    embeddings: str | None = None
+    config: dict[str, str] | None = None
+    caller: str | None = None
+    args: list[dict[str, str]] | None = None
+
+
+@dataclass
+class PipelineConfigs:
+    name: str
+    description: str
+    tools: list[ToolConfigs]
+    llm: str | None = None
+    embeddings: str | None = None
+    config: dict[str, str] | None = None
+
+
 class Configs:
     db_confgs: dict[str, VectorDBConfigs] = {}
     llm_configs: dict[str, LLMConfigs] = {}
     embeddings_configs: dict[str, EmbeddingsConfigs] = {}
+    agent_configs: dict[str, AgentConfigs] = {}
 
     def __init__(self, current_filename: str):
         self.current_dir = Path(__file__).parent  / current_filename
         self.read_yaml()
+        self.db_configer()
+        self.llm_configer()
+        self.embeddings_configer()
+        self.agent_configer()
 
-    def read_yaml(self): 
-        for file in self.current_dir.listdir():
-            if file.is_file() and file.suffix == '.yaml':
-                with open(file, 'r') as f:
-                    configs = yaml.safe_load(f)
+    def read_yaml(self):
+        for file in self.current_dir.glob("*.yaml"):
+            with open(file, 'r') as f:
+                configs = yaml.safe_load(f) or {}
 
-                for key, value in config.items():
-                    if key in self._YAML_KEYS:
-                        setattr(self, key, value)
-                return 
+            for key, value in configs.items():
+                setattr(self, key, value)
+            return
 
-        raise FileNotFoundError("No YAML configuration file found in the current directory.")
+        raise FileNotFoundError(f"No YAML configuration file found in {self.current_dir}.")
 
     def db_configer(self):
         if 'dbs' in self.__dict__:
-            for db_name in self.dbs:
+            for db_name, db_cfg in self.dbs.items():
                 if db_name == 'vector_db':
                     self.db_confgs[db_name] = VectorDBConfigs(
-                        host=self.dbs.get('host', 'localhost'),
-                        port=self.dbs.get('port', 5432),
-                        api_key=self.dbs.get('api_key', ''),
-                        path=self.dbs.get('path', '')
+                        host=db_cfg.get('host', 'localhost'),
+                        port=db_cfg.get('port', 5432),
+                        api_key=db_cfg.get('api_key', ''),
+                        path=db_cfg.get('path', '')
                     )
 
     def llm_configer(self):
         if 'llm' in self.__dict__:
-            for llm_name in self.llm:
+            for llm_name, llm_cfg in self.llm.items():
                 self.llm_configs[llm_name] = LLMConfigs(
-                    model_name=self.llm.get('model_name', ''),
-                    temperature=self.llm.get('temperature', 0.0),
-                    max_tokens=self.llm.get('max_tokens', 0),
-                    api_key=self.llm.get('api_key', ''),
-                    type=self.llm.get('type', 'generator'),
-                    tools=self.llm.get('tools', None)
+                    model_name=llm_cfg.get('model_name', ''),
+                    temperature=llm_cfg.get('temperature', 0.0),
+                    max_tokens=llm_cfg.get('max_tokens', 0),
+                    api_key=llm_cfg.get('api_key', ''),
+                    type=llm_cfg.get('type', 'generator'),
+                    tools=llm_cfg.get('tools', None),
+                    mcp_servers=llm_cfg.get('mcp_servers', None)
                 )
 
     def embeddings_configer(self):
         if 'embeddings' in self.__dict__:
-            for embedding_name in self.embeddings:
+            for embedding_name, embedding_cfg in self.embeddings.items():
                 self.embeddings_configs[embedding_name] = EmbeddingsConfigs(
-                    model_name=self.embeddings.get('model_name', ''),
-                    api_key=self.embeddings.get('api_key', '')
+                    model_name=embedding_cfg.get('model_name', ''),
+                    api_key=embedding_cfg.get('api_key', '')
+                )
+
+    def agent_configer(self):
+        if 'agents' in self.__dict__:
+            for agent_name, agent_cfg in self.agents.items():
+                self.agent_configs[agent_name] = AgentConfigs(
+                    responsiblity_prompt=agent_cfg.get('responsiblity_prompt', ''),
+                    tools=agent_cfg.get('tools', None),
+                    type=agent_cfg.get('type', 'generator'),
+                    mcp_servers=agent_cfg.get('mcp_servers', None),
+                    llms=agent_cfg.get('llms', None),
+                    db=agent_cfg.get('db', None),
+                    prompt=agent_cfg.get('prompt', None)
                 )
