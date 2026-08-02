@@ -32,7 +32,7 @@ class BaseVectorDB(VectorDBConfigs):
 
     Args:
         name: Db name as referenced by agents, e.g. "ds_knowledge_db".
-        type: Driver to connect with, e.g. "chroma".
+        db: Engine to connect with, e.g. "chroma".
         host/port/url: Server location for client-server engines.
         api_key: Literal key, or the name of an env var holding it.
         path: Storage directory/file for embedded engines (FAISS, Chroma, Qdrant, LanceDB).
@@ -48,7 +48,7 @@ class BaseVectorDB(VectorDBConfigs):
     def __init__(
         self,
         name: str,
-        type: str,
+        db: str,
         host: str | None = None,
         port: int | None = None,
         api_key: str | None = None,
@@ -61,7 +61,7 @@ class BaseVectorDB(VectorDBConfigs):
     ) -> None:
         super().__init__(
             name=name,
-            type=type,
+            db=db,
             host=host,
             port=port,
             api_key=api_key,

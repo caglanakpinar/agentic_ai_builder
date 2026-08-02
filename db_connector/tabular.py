@@ -22,7 +22,7 @@ class BaseSQLDB(SQLDBConfigs):
 
     Args:
         name: Db name as referenced by agents, e.g. "ds_knowledge_db".
-        type: Driver to connect with, e.g. "postgresql".
+        db: Engine to connect with, e.g. "postgresql".
         host/port/database/user/password: Standard connection fields.
         connection_string: Full DSN; when set it takes precedence over the individual fields.
         path: File path for file-backed engines (SQLite, DuckDB).
@@ -36,7 +36,7 @@ class BaseSQLDB(SQLDBConfigs):
     def __init__(
         self,
         name: str,
-        type: str,
+        db: str,
         host: str | None = None,
         port: int | None = None,
         database: str | None = None,
@@ -50,7 +50,7 @@ class BaseSQLDB(SQLDBConfigs):
     ) -> None:
         super().__init__(
             name=name,
-            type=type,
+            db=db,
             host=host,
             port=port,
             database=database,
