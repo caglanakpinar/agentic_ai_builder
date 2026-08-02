@@ -27,10 +27,31 @@ class AgentConfigs:
 
 @dataclass
 class VectorDBConfigs:
-    host: str
-    port: int
-    api_key: str
-    path: str
+    name: str  # db name as referenced by agents, e.g. "ds_knowledge_db"
+    type: str  # driver to connect with: "faiss", "chroma", "qdrant", "pinecone", "weaviate", ...
+    host: str | None = None
+    port: int | None = None
+    api_key: str | None = None  # literal key, or the name of an env var holding it
+    path: str | None = None  # storage directory/file for embedded engines (FAISS, Chroma, Qdrant, LanceDB)
+    url: str | None = None  # full server URL; when set it takes precedence over host/port
+    collection_name: str = "default"  # collection/index/class the connector reads and writes
+    dimension: int | None = None  # embedding width; required by engines that build the index up front
+    metric: str = "cosine"  # similarity metric: "cosine", "l2", or "ip"
+
+
+@dataclass
+class SQLDBConfigs:
+    name: str  # db name as referenced by agents, e.g. "ds_knowledge_db"
+    type: str  # driver to connect with: "postgresql", "mysql", "bigquery", "sqlite", "snowflake", ...
+    host: str | None = None
+    port: int | None = None
+    database: str | None = None  # database/schema (BigQuery: dataset) to run against
+    user: str | None = None
+    password: str | None = None  # literal password, or the name of an env var holding it
+    connection_string: str | None = None  # full DSN; when set it takes precedence over the fields above
+    path: str | None = None  # file path for file-backed engines (SQLite, DuckDB) or a seed .sql script
+    project: str | None = None  # cloud project id, used by BigQuery
+    credentials: str | None = None  # path to a service-account JSON, or the name of an env var holding it
 
 
 @dataclass
