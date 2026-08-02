@@ -2,9 +2,13 @@ from abc import abstractmethod
 from typing import Any
 
 from builder.prompts import BasePrompt
+from builder.tools import ToolBox
 from models.llms import BaseLLM
 from uilts.configs import AgentConfigs
 from uilts.logger import logger
+from db_connector.vector import BaseVectorConnector
+from db_connector.text import BaseTextConnector
+from models.embeddings import BaseEmbeddings
 
 
 class BaseAgent:
@@ -18,6 +22,10 @@ class BaseAgent:
     Prompt rendering is delegated to `BasePrompt`, so an agent's `.md` prompt can reference `{question}`,
     `{context}`, or another agent by name — the latter resolved from `agent_outputs`, which is how one
     step's result feeds the next.
+
+    An agent that declares `tools` gets a `ToolBox` built from them: it imports the function behind each
+    tool and renders the schemas in the dialect this agent's provider expects, so the tools passed to a
+    call are callable ones. `call_tool` runs whichever of them the model asks for.
 
     Args:
         name: Agent name as it appears in the YAML `agents:` block, and the key other agents use to
@@ -46,6 +54,11 @@ class BaseAgent:
         self.type = agent_config.type
         self.tools = agent_config.tools
         self.mcp_servers = agent_config.mcp_servers
+        self.toolbox = (
+            ToolBox(current_filename=current_filename, agent_config=agent_config)
+            if agent_config.tools
+            else None
+        )
         self._initialize_agent()
 
     def _initialize_agent(self) -> None:
@@ -77,6 +90,13 @@ class BaseAgent:
                 raise
             logger.warning(f"Agent {self.name} falling back to substitute LLM after error: {error}")
             return self.substitute_llm._call(prompt, **kwargs)
+
+    def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
+        """Run one of this agent's tools by name — the other half of a provider's tool-use round trip."""
+        if not self.toolbox:
+            raise ValueError(f"Agent {self.name} has no tools configured.")
+
+        return self.toolbox.call(name, arguments)
 
     @abstractmethod
     def run(self, question: str, context: str, agent_outputs: dict[str, str], **kwargs: Any) -> str:
@@ -112,8 +132,8 @@ class WorkerAgent(BaseAgent):
 
     def run(self, question: str, context: str, agent_outputs: dict[str, str], **kwargs: Any) -> str:
         prompt = self.build_prompt(question, context, agent_outputs)
-        if self.tools:
-            kwargs.setdefault("tools", self.tools)
+        if self.toolbox:
+            kwargs.setdefault("tools", self.toolbox.schemas_for(self.llm))
         if self.mcp_servers:
             kwargs.setdefault("mcp_servers", self.mcp_servers)
 
@@ -125,31 +145,73 @@ class WorkerAgent(BaseAgent):
 class RAGBuilderAgent(BaseAgent):
     """Retrieves supporting documents from a knowledge db, then generates over what it found.
 
-    Reads `rag_builder.md`. `agent_config.db` names the db to retrieve from; retrieval itself is
+    Reads `rag_builder.md`. `agent_config.db_vector` names the db to retrieve from; retrieval itself is
     delegated to the `db_connector` passed in at construction. Without a connector the agent falls back
     to the caller-supplied `context`, so it still runs before the db layer is wired up.
     """
 
     prompt_name: str = "rag_builder"
 
-    def __init__(self, *args: Any, db_connector: Any = None, **kwargs: Any) -> None:
-        self.db_connector = db_connector
+    def __init__(self, *args: Any, db_vector_connector: Any = None, db_text_connector: Any = None, embeddings_connector: Any = None, **kwargs: Any) -> None:
+        self.db_vector_connector: BaseVectorConnector = db_vector_connector
+        self.db_text_connector: BaseTextConnector = db_text_connector
+        self.embeddings_connector: BaseEmbeddings = embeddings_connector  # Placeholder for future use if needed
         super().__init__(*args, **kwargs)
 
-    def retrieve(self, question: str, top_k: int = 5) -> str:
+    def assembling_prompt(self, question: str, retrieved: str, context: str | None = None) -> str:
+        prompt = f"""
+        You are a assistant that retrieves relevant documents from a knowledge database and generates a response based on the retrieved information.
+        Use the retrieved documents to answer the question. If the retrieved documents do not contain enough information to answer the question, respond with "I don't know".
+        Generate with the following context. Take retrieved documents into account, but do not hallucinate information that is not present in the retrieved documents. If the retrieved documents are empty, respond with "I don't know".
+
+        Rules: 
+           - Do not make up information or provide an answer that is not supported by the retrieved documents.
+           - Do not provide any information that is not present in the retrieved documents.
+           - Do not provide any information that is not relevant to the question.
+
+    
+        question: {question}
+        {f"context: {context}" if context else ""}
+
+        retrieved: {retrieved}
+        """
+        return prompt
+
+    def retrieve(self, question: str, context: str, top_k: int = 5) -> str:
         """Return retrieved documents for `question`, joined into a single context block."""
-        if not self.db_connector:
-            logger.warning(f"RAGBuilder {self.name} has no db_connector; using the provided context.")
+        if not self.db_vector_connector:
+            logger.warning(f"RAGBuilder {self.name} has no db_vector_connector; using the provided context.")
             return ''
 
-        results = self.db_connector.query(question, top_k=top_k)
-        return "\n\n".join(str(result) for result in results)
+        if not self.db_text_connector:
+            logger.warning(f"RAGBuilder {self.name} has no db_text_connector; returning raw vector results.")
+            return ''
+
+        if not self.embeddings_connector:
+            logger.warning(f"RAGBuilder {self.name} has no embeddings_connector; using the provided context.")
+            return ''
+
+        # 1. convert question to embedding using embeddings_connector
+        question_embedding = self.embeddings_connector.embed_text(question)
+
+        # 2. retrieve relevant document IDs from the vector database
+        vector_results = self.db_vector_connector.query(question_embedding, top_k=top_k)
+        document_ids = [result.id for result in vector_results]
+        
+        # 3. fetch the actual documents from the text database using those IDs
+        text_results = self.db_text_connector.query(indexes=document_ids)
+        assembling_prompt = self.assembling_prompt(question, retrieved="\n\n".join(str(result) for result in text_results), context=context)
+        return assembling_prompt
 
     def run(self, question: str, context: str, agent_outputs: dict[str, str], **kwargs: Any) -> str:
-        retrieved = self.retrieve(question, top_k=kwargs.pop("top_k", 5))
-        prompt = self.build_prompt(question, retrieved or context, agent_outputs)
+        # RAG - 1. step: retrieve relevant documents from the knowledge database
+        retrieved = self.retrieve(question, context, top_k=kwargs.pop("top_k", 5))
+        retrieve_prompt = self.assembling_prompt(question, retrieved, context)
+
+        # RAG - 2. step: generate output based on the retrieved documents
+        prompt = self.build_prompt(question, retrieve_prompt, agent_outputs)  # Ensure prompt is built and cached
         output = self._generate(prompt, **kwargs)
-        logger.info(f"RAGBuilder {self.name} generated over db {self.agent_config.db}.")
+        logger.info(f"RAGBuilder {self.name} generated over db {self.agent_config.db_vector}.")
         return output
 
 
