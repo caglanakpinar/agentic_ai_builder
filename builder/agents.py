@@ -82,14 +82,28 @@ class BaseAgent:
         return prompt.get_prompt(prompt_name or self.prompt_name)
 
     def _generate(self, prompt: str, **kwargs: Any) -> str:
-        """Call the primary LLM, falling back to `substitute_llm` if the call raises."""
+        """Call the primary LLM, falling back to `substitute_llm` if the call raises.
+
+        When the substitute fails too, both failures are reported together. Otherwise the substitute's
+        traceback is all that surfaces, which is misleading when the two share a cause — an unset key,
+        say, fails both callers, and only the second one is visible.
+        """
         try:
             return self.llm._call(prompt, **kwargs)
         except Exception as error:
             if not self.substitute_llm:
                 raise
+
             logger.warning(f"Agent {self.name} falling back to substitute LLM after error: {error}")
-            return self.substitute_llm._call(prompt, **kwargs)
+            try:
+                return self.substitute_llm._call(prompt, **kwargs)
+            except Exception as substitute_error:
+                raise RuntimeError(
+                    f"Agent {self.name} could not generate. "
+                    f"{type(self.llm).__name__}({self.llm.model_name}) failed with: {error}. "
+                    f"Substitute {type(self.substitute_llm).__name__}"
+                    f"({self.substitute_llm.model_name}) failed with: {substitute_error}."
+                ) from substitute_error
 
     def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
         """Run one of this agent's tools by name — the other half of a provider's tool-use round trip."""
