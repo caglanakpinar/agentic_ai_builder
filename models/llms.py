@@ -1,6 +1,5 @@
 
 import json
-import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -17,7 +16,7 @@ from google.genai import types as genai_types
 
 from uilts.configs import Configs
 from uilts.logger import logger
-from uilts.configs import LLMConfigs
+from uilts.configs import LLMConfigs, resolve_secret
 
 
 class BaseLLM(LLMConfigs):
@@ -37,7 +36,9 @@ class BaseLLM(LLMConfigs):
 
     Args:
         model_name: Provider/model identifier (e.g. "claude-sonnet-5", "gpt-4o").
-        temperature: Sampling temperature; overridable per-call via kwargs.
+        temperature: Sampling temperature, or None to leave it out of the request entirely — which is
+            what the newest Claude models require, since they reject the parameter (Opus 5, Opus 4.8/4.7,
+            Fable 5) or accept only their own default (Sonnet 5). Overridable per-call via kwargs.
         max_tokens: Max tokens to generate; overridable per-call via kwargs.
         api_key: Provider API key used to construct the client.
         tools: Tool/function-calling schema list, in the calling provider's expected format.
@@ -47,6 +48,8 @@ class BaseLLM(LLMConfigs):
             `_initialize_model` and applied to matching class attributes on the subclass.
     """
     model_client: InferenceClient | anthropic.Anthropic | OpenAI | Mistral | genai.Client = None
+    arguments: list[str] = []  # names of the optional params a subclass forwards to its provider
+
     def __init__(
         self,
         model_name: str,
@@ -70,24 +73,36 @@ class BaseLLM(LLMConfigs):
         self.api_key_checker()
         self._initialize_model(**kwargs)
 
-    def api_key_checker(self) -> str:
-        """Resolve `api_key` as either an environment variable name or a literal key value.
-
-        Tries `api_key` as an environment variable name first; if that's unset, falls back to
-        treating `api_key` itself as the literal key. Raises if neither is available.
-        """
-        if os.getenv(self.api_key):
-            self.api_key = os.getenv(self.api_key)
-
-        if not self.api_key:
-            logger.error(f"No API key or environment variable name provided for {self.model_name}.")
-            raise ValueError(
-                f"Missing API key for {self.model_name}: provide a direct key or an environment variable name."
-            )
+    def api_key_checker(self) -> None:
+        """Resolve `api_key` as either an environment variable name or a literal key value."""
+        try:
+            self.api_key = resolve_secret(self.api_key, self.model_name)
+        except ValueError as error:
+            logger.error(str(error))
+            raise
 
     @abstractmethod
     def _initialize_model(self, **kwargs: Any) -> None:
         """Initialize provider-specific model/client state."""
+
+    def optional_arguments(self, *extra: str, **kwargs: Any) -> dict[str, Any]:
+        """Collect the optional params to send: a per-call `kwargs` value first, else the one set at construction.
+
+        A param is only sent when it actually has a value. Anything still None is one this caller was
+        never configured with, and providers reject a null where they expect a value — an empty `tools`
+        list included — so it is left out of the request rather than sent empty.
+
+        `extra` names params outside the subclass's `arguments` list that belong in the same treatment,
+        which is how `tools` (every provider) and `mcp_servers` (Claude only) are passed.
+        """
+        arguments: dict[str, Any] = {}
+        for name in (*extra, *self.arguments):
+            value = kwargs.get(name, getattr(self, name, None))
+            if value is None or (isinstance(value, (list, tuple, dict)) and not value):
+                continue
+            arguments[name] = value
+
+        return arguments
 
     def _call(self, prompt: str, **kwargs: Any) -> str:
         """Run one generation call and return plain text."""
@@ -125,13 +140,9 @@ class HuggingFaceInferenceLLM(BaseLLM):
         call_kwargs: dict[str, Any] = {
             "model": self.model_name,
             "max_tokens": int(kwargs.get("max_tokens", self.max_tokens)),
-            "temperature": float(kwargs.get("temperature", self.temperature)),
             "messages": [{"role": "user", "content": str(prompt)}],
-            "tools": kwargs.get("tools", self.tools),
+            **self.optional_arguments('temperature', 'tools', **kwargs),
         }
-        for args in self.arguments:
-            if kwargs.get(args) or getattr(self, args, None) is not None:
-                call_kwargs[args] = kwargs.get(args, getattr(self, args, None))
 
         response = self.model_client.chat_completion(**call_kwargs)
         logger.info(f"HF Inference API response: {response}")
@@ -145,8 +156,8 @@ class ClaudeLLM(BaseLLM):
     `thinking`, `service_tier`, `container`. Also the only caller that forwards `mcp_servers`.
     """
     system: str | None = None  # system prompt / persona instructions
-    top_p: float = 1.0  # nucleus sampling threshold
-    top_k: int = 1  # restrict sampling to the top K candidate tokens
+    top_p: float | None = None  # nucleus sampling threshold; Anthropic advises tuning this or temperature, not both
+    top_k: int | None = None  # restrict sampling to the top K candidate tokens; leave unset to sample normally
     stop_sequences: list[str] | None = None  # strings that halt generation early
     stream: bool = False  # stream the response instead of waiting for the full completion
     tool_choice: dict[str, Any] | None = None  # controls how/whether tools are invoked
@@ -177,17 +188,23 @@ class ClaudeLLM(BaseLLM):
         call_kwargs: dict[str, Any] = {
             "model": self.model_name,
             "max_tokens": int(kwargs.get("max_tokens", self.max_tokens)),
-            "temperature": float(kwargs.get("temperature", self.temperature)),
             "messages": [{"role": "user", "content": prompt}],
-            "tools": kwargs.get("tools", self.tools),
-            "mcp_servers": kwargs.get("mcp_servers", self.mcp_servers)
+            **self.optional_arguments('temperature', 'tools', 'mcp_servers', **kwargs),
         }
-        for args in self.arguments:
-            if kwargs.get(args) or getattr(self, args, None) is not None:
-                call_kwargs[args] = kwargs[args]
 
         response = self.model_client.messages.create(**call_kwargs)
         logger.info(f"Claude API response: {response}")
+
+        # This caller returns text, so a response that stopped to call a tool has had its request
+        # dropped: nothing here runs the tool and feeds the result back. Say so rather than returning
+        # the half-finished text as though it were the whole answer.
+        if getattr(response, "stop_reason", None) == "tool_use":
+            asked_for = [block.name for block in response.content if block.type == "tool_use"]
+            logger.warning(
+                f"{self.model_name} stopped to call {asked_for}, which this caller does not run — "
+                "the text below is only what it said before asking."
+            )
+
         return "".join(block.text for block in response.content if block.type == "text").strip()
 
 
@@ -230,17 +247,22 @@ class OpenAILLM(BaseLLM):
         call_kwargs: dict[str, Any] = {
             "model": self.model_name,
             "max_tokens": int(kwargs.get("max_tokens", self.max_tokens)),
-            "temperature": float(kwargs.get("temperature", self.temperature)),
             "messages": [{"role": "user", "content": prompt}],
-            "tools": kwargs.get("tools", self.tools),
+            **self.optional_arguments('temperature', 'tools', **kwargs),
         }
-        for args in self.arguments:
-            if kwargs.get(args) or getattr(self, args, None) is not None:
-                call_kwargs[args] = kwargs[args]
 
         response = self.model_client.chat.completions.create(**call_kwargs)
         logger.info(f"OpenAI API response: {response}")
-        return str(response.choices[0].message.content or "").strip()
+
+        choice = response.choices[0]
+        if choice.finish_reason == "tool_calls":  # see the note in ClaudeLLM._call
+            asked_for = [call.function.name for call in (choice.message.tool_calls or [])]
+            logger.warning(
+                f"{self.model_name} stopped to call {asked_for}, which this caller does not run — "
+                "the text below is only what it said before asking."
+            )
+
+        return str(choice.message.content or "").strip()
 
 
 class GoogleLLM(BaseLLM):
@@ -251,8 +273,8 @@ class GoogleLLM(BaseLLM):
     `safety_settings`.
     """
     system_instruction: str | None = None  # system prompt / persona instructions
-    top_p: float = 1.0  # nucleus sampling threshold
-    top_k: int = 1  # restrict sampling to the top K candidate tokens
+    top_p: float | None = None  # nucleus sampling threshold
+    top_k: int | None = None  # restrict sampling to the top K candidate tokens; leave unset to sample normally
     stop_sequences: list[str] | None = None  # strings that halt generation early
     candidate_count: int = 1  # number of response candidates to generate
     seed: int | None = None  # deterministic sampling seed
@@ -282,12 +304,8 @@ class GoogleLLM(BaseLLM):
     def _call(self, prompt: str, **kwargs: Any) -> str:
         config_kwargs: dict[str, Any] = {
             "max_output_tokens": int(kwargs.get("max_tokens", self.max_tokens)),
-            "temperature": float(kwargs.get("temperature", self.temperature)),
-            "tools": kwargs.get("tools", self.tools),
+            **self.optional_arguments('temperature', 'tools', **kwargs),
         }
-        for args in self.arguments:
-            if kwargs.get(args) or getattr(self, args, None) is not None:
-                config_kwargs[args] = kwargs[args]
 
         response = self.model_client.models.generate_content(
             model=self.model_name,
@@ -305,18 +323,19 @@ class GrokLLM(BaseLLM):
     `top_p`, `stop`, `tool_choice`, `reasoning_effort`, and xAI's live-search `search_parameters`.
     """
 
-    def _initialize_model(self) -> None:
+    def _initialize_model(self, **kwargs: Any) -> None:
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
         self.model_client = OpenAI(api_key=self.api_key, base_url="https://api.x.ai/v1")
 
     def _call(self, prompt: str, **kwargs: Any) -> str:
         call_kwargs: dict[str, Any] = {
             "model": self.model_name,
             "max_tokens": int(kwargs.get("max_tokens", self.max_tokens)),
-            "temperature": float(kwargs.get("temperature", self.temperature)),
             "messages": [{"role": "user", "content": prompt}],
+            **self.optional_arguments('temperature', 'tools', **kwargs),
         }
-        if self.tools or kwargs.get("tools"):
-            call_kwargs["tools"] = kwargs.get("tools", self.tools)
 
         response = self.model_client.chat.completions.create(**call_kwargs)
         logger.info(f"Grok API response: {response}")
@@ -355,12 +374,9 @@ class OllamaLLM(BaseLLM):
         call_kwargs: dict[str, Any] = {
             "model": self.model_name,
             "max_tokens": int(kwargs.get("max_tokens", self.max_tokens)),
-            "temperature": float(kwargs.get("temperature", self.temperature)),
             "messages": [{"role": "user", "content": prompt}],
+            **self.optional_arguments('temperature', 'tools', **kwargs),
         }
-        for args in self.arguments:
-            if kwargs.get(args) or getattr(self, args, None) is not None:
-                call_kwargs[args] = kwargs.get(args, getattr(self, args, None))
 
         response = self.model_client.chat.completions.create(**call_kwargs)
         logger.info(f"Ollama response: {response}")
@@ -404,14 +420,9 @@ class MistralLLM(BaseLLM):
         call_kwargs: dict[str, Any] = {
             "model": self.model_name,
             "max_tokens": int(kwargs.get("max_tokens", self.max_tokens)),
-            "temperature": float(kwargs.get("temperature", self.temperature)),
             "messages": [{"role": "user", "content": prompt}],
+            **self.optional_arguments('temperature', 'tools', **kwargs),
         }
-        for args in self.arguments:
-            if kwargs.get(args) or getattr(self, args, None) is not None:
-                call_kwargs[args] = kwargs.get(args, getattr(self, args, None)) 
-
-
 
         response = self.model_client.chat.complete(**call_kwargs)
         logger.info(f"Mistral API response: {response}")
