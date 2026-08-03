@@ -1,8 +1,7 @@
-import os
 from abc import abstractmethod
 from typing import Any
 
-from uilts.configs import TextDBConfigs
+from uilts.configs import TextDBConfigs, resolve_secret
 from uilts.logger import logger
 
 
@@ -86,11 +85,9 @@ class BaseTextDB(TextDBConfigs):
         self._initialize_connection(**kwargs)
 
     def secret_checker(self) -> None:
-        """Resolve `api_key` and `password` as either env var names or literal values."""
-        if self.api_key and os.getenv(self.api_key):
-            self.api_key = os.getenv(self.api_key)
-        if self.password and os.getenv(self.password):
-            self.password = os.getenv(self.password)
+        """Resolve `api_key` and `password` as env var names or literal values; either may be unset."""
+        self.api_key = resolve_secret(self.api_key, self.name, required=False)
+        self.password = resolve_secret(self.password, self.name, field="password", required=False)
 
     def _connect_kwargs(self, **kwargs: Any) -> dict[str, Any]:
         """Apply construction-time overrides, then collect this driver's optional params."""

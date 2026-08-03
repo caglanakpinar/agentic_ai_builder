@@ -1,8 +1,7 @@
-import os
 from abc import abstractmethod
 from typing import Any
 
-from uilts.configs import SQLDBConfigs
+from uilts.configs import SQLDBConfigs, resolve_secret
 from uilts.logger import logger
 
 
@@ -65,11 +64,10 @@ class BaseSQLDB(SQLDBConfigs):
         self._initialize_connection(**kwargs)
 
     def secret_checker(self) -> None:
-        """Resolve `password` and `credentials` as either env var names or literal values."""
+        """Resolve `password` and `credentials` as env var names or literal values; either may be unset."""
         for field in ('password', 'credentials'):
-            value = getattr(self, field, None)
-            if value and os.getenv(value):
-                setattr(self, field, os.getenv(value))
+            value = resolve_secret(getattr(self, field, None), self.name, field=field, required=False)
+            setattr(self, field, value)
 
     def _connect_kwargs(self, **kwargs: Any) -> dict[str, Any]:
         """Apply construction-time overrides, then collect this driver's optional params."""

@@ -1,9 +1,8 @@
-import os
 from abc import abstractmethod
 from pathlib import Path
 from typing import Any
 
-from uilts.configs import VectorDBConfigs
+from uilts.configs import VectorDBConfigs, resolve_secret
 from uilts.logger import logger
 
 
@@ -75,9 +74,8 @@ class BaseVectorDB(VectorDBConfigs):
         self._initialize_connection(**kwargs)
 
     def secret_checker(self) -> None:
-        """Resolve `api_key` as either an env var name or a literal value."""
-        if self.api_key and os.getenv(self.api_key):
-            self.api_key = os.getenv(self.api_key)
+        """Resolve `api_key` as either an env var name or a literal value; embedded engines need none."""
+        self.api_key = resolve_secret(self.api_key, self.name, required=False)
 
     def _connect_kwargs(self, **kwargs: Any) -> dict[str, Any]:
         """Apply construction-time overrides, then collect this driver's optional params."""
