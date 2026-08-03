@@ -256,7 +256,7 @@ def llm_caller(
         caller=type(caller).__name__,
         model=caller.model_name,
         type=caller.type,
-        temperature=caller.temperature,
+        temperature=caller.temperature if caller.temperature is not None else "- (not sent)",
         max_tokens=caller.max_tokens,
         mcp_servers=", ".join(caller.mcp_servers or []) or "-",
     )
