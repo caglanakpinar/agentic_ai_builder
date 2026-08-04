@@ -290,7 +290,8 @@ def build_llm(
     caller = resolve(LLM_CALLERS, provider, "provider")
     return caller(
         model_name=model_id,
-        temperature=float(fields.get("temperature") or 0.0),
+        # Only sent when the config names one — the newest Claude models reject `temperature`.
+        temperature=None if fields.get("temperature") is None else float(fields["temperature"]),
         max_tokens=int(fields.get("max_tokens") or DEFAULT_MAX_TOKENS),
         api_key=fields.get("api_key") or "",
         tools=fields.get("tools"),

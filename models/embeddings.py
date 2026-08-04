@@ -1,6 +1,5 @@
 
 from abc import abstractmethod
-import os
 from typing import Any
 
 from openai import OpenAI
@@ -9,7 +8,7 @@ from huggingface_hub import InferenceClient
 from google import genai
 from google.genai import types as genai_types
 
-from uilts.configs import EmbeddingsConfigs
+from uilts.configs import EmbeddingsConfigs, resolve_secret
 from uilts.logger import logger
 
 
@@ -41,16 +40,13 @@ class BaseEmbeddings(EmbeddingsConfigs):
         self.api_key_checker()
         self._initialize_model(**kwargs)
 
-    def api_key_checker(self) -> str:
+    def api_key_checker(self) -> None:
         """Resolve `api_key` as either an environment variable name or a literal key value."""
-        if self.api_key and os.getenv(self.api_key):
-            self.api_key = os.getenv(self.api_key)
-
-        if not self.api_key:
-            logger.error(f"No API key or environment variable name provided for {self.model_name}.")
-            raise ValueError(
-                f"No API key or environment variable name provided for {self.model_name}."
-            )
+        try:
+            self.api_key = resolve_secret(self.api_key, self.model_name)
+        except ValueError as error:
+            logger.error(str(error))
+            raise
 
     @abstractmethod
     def _initialize_model(self, **kwargs: Any) -> None:

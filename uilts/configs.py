@@ -1,12 +1,54 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+import os
+import re
 import yaml
+
+
+ENV_VAR_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")  # what a configured environment variable name looks like
+
+
+def resolve_secret(value: str | None, owner: str, field: str = "api_key", required: bool = True) -> str | None:
+    """Resolve a configured secret as either the environment variable it names, or the literal value.
+
+    A value spelled like an environment variable — upper case, digits and underscores — is only ever a
+    name: no provider issues keys that look like that. So when the variable behind it is unset, that is a
+    missing key rather than a key that happens to be spelled `CLAUDE`, and it is refused here. Passing it
+    through instead sends the name itself as the credential, and the provider answers with a 401 that
+    says nothing about which variable was empty.
+
+    Args:
+        value: What the config holds — an environment variable name, or the secret itself.
+        owner: What the secret belongs to, for the error message (a model or db name).
+        field: The config key being resolved, for the error message.
+        required: Whether a missing value is an error. Optional for dbs that need no credential.
+    """
+    if value and os.getenv(value):
+        return os.getenv(value)
+
+    if value and ENV_VAR_NAME.match(value):
+        raise ValueError(
+            f"{owner}: `{field}` names the environment variable {value}, which is not set. "
+            f"Export it (export {value}=...) or put the secret itself in the config."
+        )
+
+    if not value and required:
+        raise ValueError(
+            f"{owner}: no `{field}` configured — give the secret, or the name of the environment "
+            "variable holding it."
+        )
+
+    return value
 
 
 @dataclass
 class LLMConfigs:
     model_name: str
-    temperature: float
+    # Left unset unless the config names one: the newest Claude models reject `temperature` outright
+    # (Opus 5, Opus 4.8/4.7, Fable 5) or accept only their default (Sonnet 5), so a sampling temperature
+    # is a per-model choice rather than something to send on every request.
+    temperature: float | None
     max_tokens: int
     api_key: str
     tools: list[dict[str, str]] | None = None
@@ -25,6 +67,12 @@ class AgentConfigs:
     db_text: str | None = None  # name of the text db this agent searches, e.g. "ds_knowledge_db_text"
     db_sql: str | None = None  # name of the tabular db this agent queries, e.g. "authentication_db"
     prompt: str | None = None  # directory (relative to Configs.current_dir) containing one file per prompt, e.g. "prompts/rag_problem_thinker_agent"
+    prompt_path: str | None = None  # a single .md file to use as this agent's prompt, when it has only one
+    thresholds: dict[str, Any] | None = None  # the bars a judger holds work to, e.g. {"min_roc_auc": 0.7}
+    # The agent(s) whose output this one works from — one name or a list. Their outputs are what
+    # `{agent_output}` renders as, so a prompt asks for "what came before" instead of naming each
+    # upstream agent itself, and rewiring the pipeline is a config change rather than a prompt edit.
+    dependency_agent: str | list[str] | None = None
     arguments: list[str] = field(default_factory=list)  # prompt names discovered in `prompt`, filled in by BasePrompt.prompt_configer
 
 @dataclass
@@ -186,7 +234,7 @@ class Configs:
             for llm_name, llm_cfg in llms.items():
                 self.llm_configs[llm_name] = LLMConfigs(
                     model_name=llm_cfg.get('model_name', llm_cfg.get('model', '')),
-                    temperature=llm_cfg.get('temperature', 0.0),
+                    temperature=llm_cfg.get('temperature'),  # None when unset — see LLMConfigs
                     max_tokens=llm_cfg.get('max_tokens', 0),
                     api_key=llm_cfg.get('api_key', ''),
                     type=llm_cfg.get('type', 'generator'),
@@ -236,5 +284,8 @@ class Configs:
                     db_vector=agent_cfg.get('db_vector', None),
                     db_text=agent_cfg.get('db_text', None),
                     db_sql=agent_cfg.get('db_sql', None),
-                    prompt=agent_cfg.get('prompt', None)
+                    prompt=agent_cfg.get('prompt', None),
+                    prompt_path=agent_cfg.get('prompt_path', None),
+                    thresholds=agent_cfg.get('thresholds', None),
+                    dependency_agent=agent_cfg.get('dependency_agent', None)
                 )

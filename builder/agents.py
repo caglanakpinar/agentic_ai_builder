@@ -3,7 +3,7 @@ from typing import Any
 
 from builder.prompts import BasePrompt
 from builder.tools import ToolBox
-from models.llms import BaseLLM
+from models.llms import BaseLLM, ToolCall, ToolFailure
 from uilts.configs import AgentConfigs
 from uilts.logger import logger
 from db_connector.vector import BaseVectorDB
@@ -59,6 +59,7 @@ class BaseAgent:
             if agent_config.tools
             else None
         )
+        self.tool_calls: list[dict[str, Any]] = []  # what this agent actually ran, from its latest run
         self._initialize_agent()
 
     def _initialize_agent(self) -> None:
@@ -82,14 +83,28 @@ class BaseAgent:
         return prompt.get_prompt(prompt_name or self.prompt_name)
 
     def _generate(self, prompt: str, **kwargs: Any) -> str:
-        """Call the primary LLM, falling back to `substitute_llm` if the call raises."""
+        """Call the primary LLM, falling back to `substitute_llm` if the call raises.
+
+        When the substitute fails too, both failures are reported together. Otherwise the substitute's
+        traceback is all that surfaces, which is misleading when the two share a cause — an unset key,
+        say, fails both callers, and only the second one is visible.
+        """
         try:
             return self.llm._call(prompt, **kwargs)
         except Exception as error:
             if not self.substitute_llm:
                 raise
+
             logger.warning(f"Agent {self.name} falling back to substitute LLM after error: {error}")
-            return self.substitute_llm._call(prompt, **kwargs)
+            try:
+                return self.substitute_llm._call(prompt, **kwargs)
+            except Exception as substitute_error:
+                raise RuntimeError(
+                    f"Agent {self.name} could not generate. "
+                    f"{type(self.llm).__name__}({self.llm.model_name}) failed with: {error}. "
+                    f"Substitute {type(self.substitute_llm).__name__}"
+                    f"({self.substitute_llm.model_name}) failed with: {substitute_error}."
+                ) from substitute_error
 
     def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
         """Run one of this agent's tools by name — the other half of a provider's tool-use round trip."""
@@ -97,6 +112,87 @@ class BaseAgent:
             raise ValueError(f"Agent {self.name} has no tools configured.")
 
         return self.toolbox.call(name, arguments)
+
+    def generate(self, prompt: str, **kwargs: Any) -> str:
+        """Produce this agent's output — running its tools when it has any and its caller can.
+
+        This is what every agent type calls. With tools configured and a provider that speaks the
+        round trip, the model actually executes them; otherwise it falls back to a single call, with
+        the tools still offered but nothing to run them.
+        """
+        self.tool_calls = []  # this run's calls, not the last one's
+        if not self.toolbox or not getattr(self.llm, "runs_tools", False):
+            if self.toolbox:
+                kwargs.setdefault("tools", self.toolbox.schemas_for(self.llm))
+                logger.warning(
+                    f"Agent {self.name}: {type(self.llm).__name__} cannot run a tool-use loop, so its "
+                    f"{len(self.toolbox)} tool(s) are offered but never executed."
+                )
+            return self._generate(prompt, **kwargs)
+
+        try:
+            return self.run_with_tools(self.llm, prompt, **kwargs)
+        except Exception as error:
+            if self.substitute_llm and getattr(self.substitute_llm, "runs_tools", False):
+                logger.warning(f"Agent {self.name} falling back to the substitute LLM's tool loop: {error}")
+                return self.run_with_tools(self.substitute_llm, prompt, **kwargs)
+
+            logger.warning(f"Agent {self.name} tool loop failed ({error}); falling back to a single call.")
+            kwargs.setdefault("tools", self.toolbox.schemas_for(self.llm))
+            return self._generate(prompt, **kwargs)
+
+    def run_with_tools(self, llm: BaseLLM, prompt: str, max_rounds: int = 8, **kwargs: Any) -> str:
+        """Drive the ask → execute → answer loop until the model stops asking for tools.
+
+        The model gets the tools in its own dialect, and whatever it asks for is executed here and fed
+        back as a tool result, round after round, until it answers in text instead. That is the whole
+        difference between offering a tool and having one run: without this loop the model's request
+        simply ends the turn and the work never happens.
+
+        A tool that raises is returned to the model as an error rather than ending the run — a bad
+        argument is something it can correct on the next round. `max_rounds` bounds the loop so a model
+        that keeps calling forever stops eventually, with whatever text it last produced.
+        """
+        messages: list[Any] = [{"role": "user", "content": prompt}]
+        tools = self.toolbox.schemas_for(llm)
+        text = ''
+
+        for round_number in range(1, max_rounds + 1):
+            response = llm.converse(messages, tools=tools, **kwargs)
+            text, calls = llm.read_turn(response)
+            if not calls:
+                logger.info(
+                    f"Agent {self.name} finished after {round_number - 1} tool round(s), "
+                    f"{len(self.tool_calls)} call(s)."
+                )
+                return text
+
+            messages.append(llm.assistant_turn(response))
+            messages.extend(llm.tool_result_turns([(call, self.execute(call)) for call in calls]))
+
+        logger.warning(
+            f"Agent {self.name} still wanted tools after {max_rounds} rounds; returning what it had."
+        )
+        return text
+
+    def execute(self, call: ToolCall) -> Any:
+        """Run one tool the model asked for, recording it, and turning a failure into a readable result."""
+        try:
+            result = self.call_tool(call.name, call.arguments)
+            failed = False
+        except Exception as error:
+            logger.warning(f"Agent {self.name}: tool {call.name} failed: {error}")
+            result = ToolFailure(f"{type(error).__name__}: {error}")
+            failed = True
+
+        self.tool_calls.append({
+            "agent": self.name,
+            "tool": call.name,
+            "arguments": call.arguments,
+            "result": None if failed else result,
+            "failed": failed,
+        })
+        return result
 
     @abstractmethod
     def run(self, question: str, context: str, agent_outputs: dict[str, str], **kwargs: Any) -> str:
@@ -115,7 +211,7 @@ class JudgerAgent(BaseAgent):
 
     def run(self, question: str, context: str, agent_outputs: dict[str, str], **kwargs: Any) -> str:
         prompt = self.build_prompt(question, context, agent_outputs)
-        verdict = self._generate(prompt, **kwargs)
+        verdict = self.generate(prompt, **kwargs)
         logger.info(f"Judger {self.name} verdict: {verdict}")
         return verdict
 
@@ -132,13 +228,16 @@ class WorkerAgent(BaseAgent):
 
     def run(self, question: str, context: str, agent_outputs: dict[str, str], **kwargs: Any) -> str:
         prompt = self.build_prompt(question, context, agent_outputs)
-        if self.toolbox:
-            kwargs.setdefault("tools", self.toolbox.schemas_for(self.llm))
         if self.mcp_servers:
             kwargs.setdefault("mcp_servers", self.mcp_servers)
 
-        output = self._generate(prompt, **kwargs)
-        logger.info(f"Worker {self.name} produced output of {len(output)} chars.")
+        # `generate` owns the tools: it passes them into the loop that actually runs them, and only
+        # falls back to offering them on a single call when the provider can't run one.
+        output = self.generate(prompt, **kwargs)
+        logger.info(
+            f"Worker {self.name} produced output of {len(output)} chars "
+            f"after {len(self.tool_calls)} tool call(s)."
+        )
         return output
 
 
@@ -210,7 +309,7 @@ class RAGBuilderAgent(BaseAgent):
 
         # RAG - 2. step: generate output based on the retrieved documents
         prompt = self.build_prompt(question, retrieve_prompt, agent_outputs)  # Ensure prompt is built and cached
-        output = self._generate(prompt, **kwargs)
+        output = self.generate(prompt, **kwargs)
         logger.info(f"RAGBuilder {self.name} generated over db {self.agent_config.db_vector}.")
         return output
 
@@ -226,7 +325,7 @@ class PlannerAgent(BaseAgent):
 
     def run(self, question: str, context: str, agent_outputs: dict[str, str], **kwargs: Any) -> str:
         prompt = self.build_prompt(question, context, agent_outputs)
-        plan = self._generate(prompt, **kwargs)
+        plan = self.generate(prompt, **kwargs)
         logger.info(f"Planner {self.name} produced a plan.")
         return plan
 
@@ -247,7 +346,7 @@ class ClassifierAgent(BaseAgent):
 
     def run(self, question: str, context: str, agent_outputs: dict[str, str], **kwargs: Any) -> str:
         prompt = self.build_prompt(question, context, agent_outputs)
-        label = self._generate(prompt, **kwargs).strip()
+        label = self.generate(prompt, **kwargs).strip()
 
         if self.labels and label not in self.labels:
             logger.warning(f"Classifier {self.name} returned {label!r}, not one of {self.labels}.")

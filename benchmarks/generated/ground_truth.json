@@ -1,0 +1,164 @@
+{
+  "rows": 2415,
+  "class_balance": {
+    "positive": 444,
+    "negative": 1971,
+    "positive_rate": 0.1839
+  },
+  "validation_failures": [
+    "unique_ids"
+  ],
+  "cleaning": {
+    "duplicates_removed": 15,
+    "imputed_columns": [
+      "avg_session_minutes",
+      "total_charges"
+    ],
+    "clipped_columns": [
+      "avg_session_minutes",
+      "monthly_charges",
+      "total_charges"
+    ],
+    "clipping_skipped": {
+      "tenure_months": "whole-number column \u2014 a count or an ordinal, not a measurement",
+      "support_tickets": "whole-number column \u2014 a count or an ordinal, not a measurement",
+      "num_products": "whole-number column \u2014 a count or an ordinal, not a measurement",
+      "is_senior": "zero interquartile range \u2014 a flag or a constant"
+    }
+  },
+  "top_features": [
+    {
+      "feature": "tenure_months",
+      "correlation": -0.252,
+      "abs_correlation": 0.252,
+      "mutual_information": 0.03313
+    },
+    {
+      "feature": "tenure_bucket=established",
+      "correlation": -0.2195,
+      "abs_correlation": 0.2195,
+      "mutual_information": 0.02502
+    },
+    {
+      "feature": "contract_type=month-to-month",
+      "correlation": 0.2181,
+      "abs_correlation": 0.2181,
+      "mutual_information": 0.02534
+    },
+    {
+      "feature": "is_month_to_month",
+      "correlation": 0.2181,
+      "abs_correlation": 0.2181,
+      "mutual_information": 0.02534
+    },
+    {
+      "feature": "total_charges",
+      "correlation": -0.2153,
+      "abs_correlation": 0.2153,
+      "mutual_information": 0.02356
+    },
+    {
+      "feature": "tickets_per_year",
+      "correlation": 0.19,
+      "abs_correlation": 0.19,
+      "mutual_information": 0.02619
+    },
+    {
+      "feature": "support_tickets",
+      "correlation": 0.1696,
+      "abs_correlation": 0.1696,
+      "mutual_information": 0.0113
+    },
+    {
+      "feature": "contract_type=two-year",
+      "correlation": -0.1534,
+      "abs_correlation": 0.1534,
+      "mutual_information": 0.01506
+    }
+  ],
+  "training_metrics": {
+    "threshold": 0.5,
+    "accuracy": 0.6792,
+    "precision": 0.3343,
+    "recall": 0.7449,
+    "f1": 0.4615,
+    "roc_auc": 0.7718,
+    "confusion_matrix": {
+      "true_positive": 330,
+      "false_positive": 657,
+      "true_negative": 1300,
+      "false_negative": 113
+    },
+    "positive_rate": 0.1846
+  },
+  "cross_validation": {
+    "mean_roc_auc": 0.761,
+    "std_roc_auc": 0.0358,
+    "folds": 5
+  },
+  "holdout_metrics": {
+    "threshold": 0.5,
+    "accuracy": 0.755,
+    "precision": 0.4211,
+    "recall": 0.6,
+    "f1": 0.4948,
+    "roc_auc": 0.7754,
+    "confusion_matrix": {
+      "true_positive": 72,
+      "false_positive": 99,
+      "true_negative": 381,
+      "false_negative": 48
+    },
+    "positive_rate": 0.2
+  },
+  "majority_class_accuracy": 0.8,
+  "best_f1_threshold": 0.5,
+  "targeting_50": {
+    "capture_rate": 0.2583,
+    "precision_at_k": 0.62,
+    "lift_over_random": 3.1
+  },
+  "baselines": [
+    {
+      "approach": "trained model",
+      "accuracy": 0.755,
+      "precision": 0.4211,
+      "recall": 0.6,
+      "f1": 0.4948,
+      "roc_auc": 0.7754
+    },
+    {
+      "approach": "month-to-month rule",
+      "accuracy": 0.5683,
+      "precision": 0.2888,
+      "recall": 0.7917,
+      "f1": 0.4232,
+      "roc_auc": 0.6521
+    },
+    {
+      "approach": "majority class",
+      "accuracy": 0.8,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "roc_auc": 0.5
+    }
+  ],
+  "beats_best_baseline": true,
+  "model_path": "./benchmarks/artifacts/classification_model.json",
+  "measurements": {
+    "rows": 2415,
+    "positive_rate": 0.1839,
+    "missing_rate": 0.0294,
+    "duplicate_rows": 0,
+    "rows_after_cleaning": 2400,
+    "feature_correlation": 0.252,
+    "cv_roc_auc": 0.761,
+    "cv_spread": 0.0358,
+    "train_holdout_auc_gap": 0.0036,
+    "holdout_f1": 0.4948,
+    "lift_at_50": 3.1,
+    "precision_at_50": 0.62,
+    "f1_gain_over_baseline": 0.0716
+  }
+}

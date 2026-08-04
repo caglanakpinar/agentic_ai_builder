@@ -1,0 +1,202 @@
+{
+  "question": "Our subscription business is losing customers and we don't know which ones to work on. Using the customer table in benchmarks/data/churn_train.csv, build something that tells the retention team who is about to churn, and tell us whether it is good enough to act on. The team can contact about 50 customers a week.",
+  "measurements": {},
+  "ground_truth": {},
+  "agents": [
+    {
+      "agent": "rag_problem_thinker_agent",
+      "type": "thinker",
+      "class": "PlannerAgent",
+      "llm": "ClaudeLLM(claude-sonnet-5)",
+      "depends_on": [],
+      "tool_calls": [],
+      "output": "rag_problem_thinker_agent: verdict: pass\ngates_failed: 0"
+    },
+    {
+      "agent": "problem_classier_agent",
+      "type": "classifier",
+      "class": "ClassifierAgent",
+      "llm": "ClaudeLLM(claude-sonnet-5)",
+      "depends_on": [
+        "rag_problem_thinker_agent"
+      ],
+      "tool_calls": [],
+      "output": "problem_classier_agent: verdict: pass\ngates_failed: 0"
+    },
+    {
+      "agent": "data_engineer",
+      "type": "generator",
+      "class": "WorkerAgent",
+      "llm": "ClaudeLLM(claude-sonnet-5)",
+      "depends_on": [
+        "rag_problem_thinker_agent"
+      ],
+      "tool_calls": [],
+      "output": "data_engineer: verdict: pass\ngates_failed: 0"
+    },
+    {
+      "agent": "feature_preprocessing",
+      "type": "generator",
+      "class": "WorkerAgent",
+      "llm": "ClaudeLLM(claude-sonnet-5)",
+      "depends_on": [
+        "rag_problem_thinker_agent",
+        "data_engineer"
+      ],
+      "tool_calls": [],
+      "output": "feature_preprocessing: verdict: pass\ngates_failed: 0"
+    },
+    {
+      "agent": "model_developer",
+      "type": "generator",
+      "class": "WorkerAgent",
+      "llm": "ClaudeLLM(claude-sonnet-5)",
+      "depends_on": [
+        "rag_problem_thinker_agent",
+        "problem_classier_agent",
+        "feature_preprocessing"
+      ],
+      "tool_calls": [],
+      "output": "model_developer: verdict: pass\ngates_failed: 0"
+    },
+    {
+      "agent": "evaluator",
+      "type": "generator",
+      "class": "WorkerAgent",
+      "llm": "ClaudeLLM(claude-sonnet-5)",
+      "depends_on": [
+        "rag_problem_thinker_agent",
+        "model_developer"
+      ],
+      "tool_calls": [],
+      "output": "evaluator: verdict: pass\ngates_failed: 0"
+    },
+    {
+      "agent": "mlops",
+      "type": "generator",
+      "class": "WorkerAgent",
+      "llm": "ClaudeLLM(claude-sonnet-5)",
+      "depends_on": [
+        "model_developer",
+        "evaluator"
+      ],
+      "tool_calls": [],
+      "output": "mlops: verdict: pass\ngates_failed: 0"
+    },
+    {
+      "agent": "benchmark",
+      "type": "generator",
+      "class": "WorkerAgent",
+      "llm": "ClaudeLLM(claude-sonnet-5)",
+      "depends_on": [
+        "model_developer",
+        "evaluator"
+      ],
+      "tool_calls": [],
+      "output": "benchmark: verdict: pass\ngates_failed: 0"
+    },
+    {
+      "agent": "problem_judger",
+      "type": "judger",
+      "class": "JudgerAgent",
+      "llm": "ClaudeLLM(claude-opus-5)",
+      "depends_on": [
+        "rag_problem_thinker_agent",
+        "problem_classier_agent"
+      ],
+      "tool_calls": [],
+      "output": "problem_judger: verdict: pass\ngates_failed: 0",
+      "verdict": {
+        "gates_failed": "0"
+      },
+      "thresholds": []
+    },
+    {
+      "agent": "data_judger",
+      "type": "judger",
+      "class": "JudgerAgent",
+      "llm": "ClaudeLLM(claude-opus-5)",
+      "depends_on": [
+        "data_engineer",
+        "feature_preprocessing"
+      ],
+      "tool_calls": [],
+      "output": "data_judger: verdict: pass\ngates_failed: 0",
+      "verdict": {
+        "gates_failed": "0"
+      },
+      "thresholds": []
+    },
+    {
+      "agent": "model_judger",
+      "type": "judger",
+      "class": "JudgerAgent",
+      "llm": "ClaudeLLM(claude-opus-5)",
+      "depends_on": [
+        "rag_problem_thinker_agent",
+        "model_developer",
+        "evaluator"
+      ],
+      "tool_calls": [],
+      "output": "model_judger: verdict: pass\ngates_failed: 0",
+      "verdict": {
+        "gates_failed": "0"
+      },
+      "thresholds": []
+    },
+    {
+      "agent": "delivery_judger",
+      "type": "judger",
+      "class": "JudgerAgent",
+      "llm": "ClaudeLLM(claude-opus-5)",
+      "depends_on": [
+        "evaluator",
+        "mlops",
+        "benchmark"
+      ],
+      "tool_calls": [],
+      "output": "delivery_judger: verdict: pass\ngates_failed: 0",
+      "verdict": {
+        "gates_failed": "0"
+      },
+      "thresholds": []
+    },
+    {
+      "agent": "judger_agent_1",
+      "type": "judger",
+      "class": "JudgerAgent",
+      "llm": "ClaudeLLM(claude-opus-5)",
+      "depends_on": [
+        "rag_problem_thinker_agent",
+        "problem_classier_agent",
+        "model_developer",
+        "evaluator",
+        "problem_judger",
+        "data_judger",
+        "model_judger",
+        "delivery_judger"
+      ],
+      "tool_calls": [],
+      "output": "judger_agent_1: verdict: pass\ngates_failed: 0",
+      "verdict": {
+        "gates_failed": "0"
+      },
+      "thresholds": []
+    }
+  ],
+  "gates": [],
+  "summary": {
+    "agents_run": 13,
+    "tool_calls": 0,
+    "tools_failed": 0,
+    "gates_passed": 0,
+    "gates_total": 0,
+    "verdicts": {
+      "problem_judger": null,
+      "data_judger": null,
+      "model_judger": null,
+      "delivery_judger": null,
+      "judger_agent_1": null
+    }
+  }
+}

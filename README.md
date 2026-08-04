@@ -256,7 +256,32 @@ The step order, the sub-agents each orchestrator groups, and which steps need a 
 read by `generate agentic_ai`, which is **not implemented yet** — see [Status](#status).
 
 A worked example of every block above is in
-[benchmarks/agentic_configurations.yaml](benchmarks/agentic_configurations.yaml).
+[benchmarks/agentic_configurations.yaml](benchmarks/agentic_configurations.yaml) — see
+[the benchmark](#benchmark) below.
+
+---
+
+## Benchmark
+
+[benchmarks/](benchmarks/) is a complete pipeline pointed at a real problem: predicting which
+subscription customers churn, a binary classification task on a dataset generated there. Thirteen agents
+— eight doing the work, five judging it — and 24 tools that actually compute what they claim. Each stage
+is gated by a judge holding it to numeric thresholds declared in the YAML, and every threshold is
+evaluated twice: the judge argues about it, and the runner does the arithmetic against what the tools
+measured.
+
+```bash
+python benchmarks/dataset.py          # write the dataset (deterministic)
+python benchmarks/run_benchmark.py    # build the workflow, run the tool chain, render every prompt
+python benchmarks/run_benchmark.py --live   # ...and call the models
+```
+
+The first two need no API key: the workflow is still built for real and the tools still run, so the
+numbers it prints are measured rather than described. That is what makes it a benchmark — the agents'
+claims can be checked against ground truth computed with no model in the loop (5-fold ROC AUC 0.759,
+holdout 0.775, against a majority-class baseline that scores 80% accuracy by predicting nobody churns).
+
+[benchmarks/README.md](benchmarks/README.md) has the full picture.
 
 ---
 

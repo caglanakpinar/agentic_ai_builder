@@ -68,3 +68,6 @@ vcpkg_installed/
 Testing/
 .cache/
 __pycache__/
+
+# benchmark run output — every file here is rewritten by `python benchmarks/run_benchmark.py`
+benchmarks/artifacts/
