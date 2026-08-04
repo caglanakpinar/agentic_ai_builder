@@ -54,7 +54,27 @@ class BasePrompt(Configs):
         self.question = question
         self.context = context
         self.agent_outputs = agent_outputs
+        self.threshold_values: dict[str, object] = dict(agent_config.thresholds or {})
+        self.thresholds = self.render_thresholds()  # what `{thresholds}` renders as
         self.read_prompts()
+
+    def render_thresholds(self) -> str:
+        """Render the agent's `thresholds` as the block a judger's prompt states its bars in.
+
+        A `min_`/`max_` prefix carries the direction, so the rendered line reads as the rule it is —
+        the judge is told the bar, not just the number, and each one is also available on its own as
+        `{min_holdout_f1}` and the like.
+        """
+        if not self.threshold_values:
+            return "(none configured)"
+
+        lines = []
+        for name, value in self.threshold_values.items():
+            direction = "at least" if name.startswith("min_") else "at most" if name.startswith("max_") else "exactly"
+            measure = name.split("_", 1)[1] if name.startswith(("min_", "max_")) else name
+            lines.append(f"  - {measure.replace('_', ' ')}: {direction} {value}   (`{name}`)")
+
+        return "\n".join(lines)
 
     def resolve_path(self, path: str | None) -> Path | None:
         """Resolve a configured prompt path: as given when it exists, otherwise under the config directory."""
@@ -118,6 +138,9 @@ class BasePrompt(Configs):
         value = getattr(self, argument, None)
         if value is not None:
             return str(value)
+
+        if argument in self.threshold_values:  # a single bar referenced by name, e.g. {min_holdout_f1}
+            return str(self.threshold_values[argument])
 
         logger.warning(f"No value provided for argument {argument}.")
         return match.group(0)
