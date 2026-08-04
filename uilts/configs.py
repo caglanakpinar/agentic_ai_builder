@@ -69,6 +69,10 @@ class AgentConfigs:
     prompt: str | None = None  # directory (relative to Configs.current_dir) containing one file per prompt, e.g. "prompts/rag_problem_thinker_agent"
     prompt_path: str | None = None  # a single .md file to use as this agent's prompt, when it has only one
     thresholds: dict[str, Any] | None = None  # the bars a judger holds work to, e.g. {"min_roc_auc": 0.7}
+    # The agent(s) whose output this one works from — one name or a list. Their outputs are what
+    # `{agent_output}` renders as, so a prompt asks for "what came before" instead of naming each
+    # upstream agent itself, and rewiring the pipeline is a config change rather than a prompt edit.
+    dependency_agent: str | list[str] | None = None
     arguments: list[str] = field(default_factory=list)  # prompt names discovered in `prompt`, filled in by BasePrompt.prompt_configer
 
 @dataclass
@@ -282,5 +286,6 @@ class Configs:
                     db_sql=agent_cfg.get('db_sql', None),
                     prompt=agent_cfg.get('prompt', None),
                     prompt_path=agent_cfg.get('prompt_path', None),
-                    thresholds=agent_cfg.get('thresholds', None)
+                    thresholds=agent_cfg.get('thresholds', None),
+                    dependency_agent=agent_cfg.get('dependency_agent', None)
                 )
