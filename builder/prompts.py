@@ -56,7 +56,37 @@ class BasePrompt(Configs):
         self.agent_outputs = agent_outputs
         self.threshold_values: dict[str, object] = dict(agent_config.thresholds or {})
         self.thresholds = self.render_thresholds()  # what `{thresholds}` renders as
+        self.dependencies = (
+            [agent_config.dependency_agent]
+            if isinstance(agent_config.dependency_agent, str)
+            else list(agent_config.dependency_agent or [])
+        )
+        self.agent_output = self.render_agent_output()  # what `{agent_output}` renders as
         self.read_prompts()
+
+    def render_agent_output(self) -> str:
+        """Render the work this agent depends on, as the block `{agent_output}` stands for.
+
+        A prompt that names each upstream agent itself (`{data_engineer}`, `{evaluator}`, ...) has the
+        pipeline's wiring written into it twice — once in the config and once in the markdown — so moving
+        a step means editing both. Declaring `dependency_agent` in the config instead lets the prompt ask
+        for "what the agents before you produced" and get exactly that, labelled by who produced it.
+
+        An upstream agent that has not run yet is said so explicitly rather than left blank: a prompt
+        that silently loses a section reads as though there was nothing to say.
+        """
+        if not self.dependencies:
+            return "(nothing upstream — this agent starts the work)"
+
+        blocks = []
+        for name in self.dependencies:
+            output = self.agent_outputs.get(name)
+            if output is None:
+                logger.warning(f"Dependency {name} has not produced an output yet.")
+                output = f"(no output — {name} has not run yet)"
+            blocks.append(f"### {name}\n\n{output}")
+
+        return "\n\n".join(blocks)
 
     def render_thresholds(self) -> str:
         """Render the agent's `thresholds` as the block a judger's prompt states its bars in.
