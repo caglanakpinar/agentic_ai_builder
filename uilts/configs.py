@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 import os
 import re
 import yaml
@@ -67,6 +68,7 @@ class AgentConfigs:
     db_sql: str | None = None  # name of the tabular db this agent queries, e.g. "authentication_db"
     prompt: str | None = None  # directory (relative to Configs.current_dir) containing one file per prompt, e.g. "prompts/rag_problem_thinker_agent"
     prompt_path: str | None = None  # a single .md file to use as this agent's prompt, when it has only one
+    thresholds: dict[str, Any] | None = None  # the bars a judger holds work to, e.g. {"min_roc_auc": 0.7}
     arguments: list[str] = field(default_factory=list)  # prompt names discovered in `prompt`, filled in by BasePrompt.prompt_configer
 
 @dataclass
@@ -279,5 +281,6 @@ class Configs:
                     db_text=agent_cfg.get('db_text', None),
                     db_sql=agent_cfg.get('db_sql', None),
                     prompt=agent_cfg.get('prompt', None),
-                    prompt_path=agent_cfg.get('prompt_path', None)
+                    prompt_path=agent_cfg.get('prompt_path', None),
+                    thresholds=agent_cfg.get('thresholds', None)
                 )
