@@ -1,0 +1,122 @@
+[
+  {
+    "judge": "problem_judger",
+    "threshold": "min_rows",
+    "required": 1000,
+    "measured": 2415,
+    "source": "tools",
+    "passed": true
+  },
+  {
+    "judge": "problem_judger",
+    "threshold": "min_positive_rate",
+    "required": 0.02,
+    "measured": 0.1839,
+    "source": "tools",
+    "passed": true
+  },
+  {
+    "judge": "problem_judger",
+    "threshold": "max_positive_rate",
+    "required": 0.5,
+    "measured": 0.1839,
+    "source": "tools",
+    "passed": true
+  },
+  {
+    "judge": "problem_judger",
+    "threshold": "max_missing_rate",
+    "required": 0.1,
+    "measured": 0.0294,
+    "source": "tools",
+    "passed": true
+  },
+  {
+    "judge": "data_judger",
+    "threshold": "max_duplicate_rows",
+    "required": 0,
+    "measured": 0,
+    "source": "tools",
+    "passed": true
+  },
+  {
+    "judge": "data_judger",
+    "threshold": "min_rows_after_cleaning",
+    "required": 2000,
+    "measured": 2400,
+    "source": "tools",
+    "passed": true
+  },
+  {
+    "judge": "data_judger",
+    "threshold": "min_feature_correlation",
+    "required": 0.1,
+    "measured": 0.252,
+    "source": "tools",
+    "passed": true
+  },
+  {
+    "judge": "model_judger",
+    "threshold": "min_cv_roc_auc",
+    "required": 0.7,
+    "measured": 0.761,
+    "source": "tools",
+    "passed": true
+  },
+  {
+    "judge": "model_judger",
+    "threshold": "max_cv_spread",
+    "required": 0.05,
+    "measured": 0.0358,
+    "source": "tools",
+    "passed": true
+  },
+  {
+    "judge": "model_judger",
+    "threshold": "max_train_holdout_auc_gap",
+    "required": 0.05,
+    "measured": 0.0036,
+    "source": "tools",
+    "passed": true
+  },
+  {
+    "judge": "model_judger",
+    "threshold": "min_holdout_f1",
+    "required": 0.45,
+    "measured": 0.4948,
+    "source": "tools",
+    "passed": true
+  },
+  {
+    "judge": "delivery_judger",
+    "threshold": "min_lift_at_50",
+    "required": 2.0,
+    "measured": 3.1,
+    "source": "tools",
+    "passed": true
+  },
+  {
+    "judge": "delivery_judger",
+    "threshold": "min_precision_at_50",
+    "required": 0.4,
+    "measured": 0.62,
+    "source": "tools",
+    "passed": true
+  },
+  {
+    "judge": "delivery_judger",
+    "threshold": "min_f1_gain_over_baseline",
+    "required": 0.03,
+    "measured": 0.0716,
+    "source": "tools",
+    "passed": true
+  },
+  {
+    "judge": "judger_agent_1",
+    "threshold": "max_failed_gates",
+    "required": 0,
+    "measured": 0,
+    "source": "tools",
+    "passed": true
+  }
+]
