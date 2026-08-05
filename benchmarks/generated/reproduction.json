@@ -1,0 +1,321 @@
+{
+  "tool_calls": 20,
+  "tools_failed": 0,
+  "measurements_reproduced": 2,
+  "measurements_produced": 13,
+  "measurements_total": 13,
+  "rows": [
+    {
+      "measurement": "cv_roc_auc",
+      "reference": 0.761,
+      "agents": 0.7546,
+      "matches": false
+    },
+    {
+      "measurement": "cv_spread",
+      "reference": 0.0358,
+      "agents": 0.0167,
+      "matches": false
+    },
+    {
+      "measurement": "duplicate_rows",
+      "reference": 0,
+      "agents": 0,
+      "matches": true
+    },
+    {
+      "measurement": "f1_gain_over_baseline",
+      "reference": 0.0716,
+      "agents": -0.0519,
+      "matches": false
+    },
+    {
+      "measurement": "feature_correlation",
+      "reference": 0.252,
+      "agents": 0.2947,
+      "matches": false
+    },
+    {
+      "measurement": "holdout_f1",
+      "reference": 0.4948,
+      "agents": 0.3713,
+      "matches": false
+    },
+    {
+      "measurement": "lift_at_50",
+      "reference": 3.1,
+      "agents": 3.2,
+      "matches": false
+    },
+    {
+      "measurement": "missing_rate",
+      "reference": 0.0294,
+      "agents": 0.0,
+      "matches": false
+    },
+    {
+      "measurement": "positive_rate",
+      "reference": 0.1839,
+      "agents": 0.2,
+      "matches": false
+    },
+    {
+      "measurement": "precision_at_50",
+      "reference": 0.62,
+      "agents": 0.64,
+      "matches": false
+    },
+    {
+      "measurement": "rows",
+      "reference": 2415,
+      "agents": 600,
+      "matches": false
+    },
+    {
+      "measurement": "rows_after_cleaning",
+      "reference": 2400,
+      "agents": 2400,
+      "matches": true
+    },
+    {
+      "measurement": "train_holdout_auc_gap",
+      "reference": 0.0036,
+      "agents": 0.0219,
+      "matches": false
+    }
+  ],
+  "calls": [
+    {
+      "agent": "data_engineer",
+      "tool": "data_reader_tool",
+      "arguments": {
+        "data_source": "benchmarks/data/churn_train.csv"
+      },
+      "failed": false
+    },
+    {
+      "agent": "data_engineer",
+      "tool": "data_validation_tool",
+      "arguments": {
+        "target": "churned",
+        "data_source": "benchmarks/data/churn_train.csv"
+      },
+      "failed": false
+    },
+    {
+      "agent": "data_engineer",
+      "tool": "data_cleaning_tool",
+      "arguments": {
+        "data_source": "benchmarks/data/churn_train.csv",
+        "outlier_method": "iqr",
+        "missing_strategy": "median",
+        "drop_duplicates": true,
+        "output_path": "data/cleaned_churn_train.csv"
+      },
+      "failed": false
+    },
+    {
+      "agent": "data_engineer",
+      "tool": "data_validation_tool",
+      "arguments": {
+        "target": "churned",
+        "data_source": "data/cleaned_churn_train.csv"
+      },
+      "failed": false
+    },
+    {
+      "agent": "feature_preprocessing",
+      "tool": "feature_engineering_tool",
+      "arguments": {
+        "feature_list": [
+          "charges_per_month",
+          "tickets_per_year",
+          "engagement_index",
+          "revenue_per_product",
+          "is_month_to_month",
+          "pays_by_echeck",
+          "tenure_bucket"
+        ],
+        "data_source": "./data/cleaned_churn_train.csv"
+      },
+      "failed": false
+    },
+    {
+      "agent": "feature_preprocessing",
+      "tool": "feature_extraction_tool",
+      "arguments": {
+        "data_source": "./benchmarks/artifacts/engineered.csv",
+        "aggregations": [
+          "value_score",
+          "friction_score",
+          "commitment_score"
+        ]
+      },
+      "failed": false
+    },
+    {
+      "agent": "feature_preprocessing",
+      "tool": "feature_selection_tool",
+      "arguments": {
+        "data_source": "./benchmarks/artifacts/extracted.csv",
+        "top_k": 20,
+        "method": "mutual_information",
+        "target": "churned"
+      },
+      "failed": false
+    },
+    {
+      "agent": "model_developer",
+      "tool": "data_reader_tool",
+      "arguments": {
+        "data_source": "benchmarks/artifacts/extracted.csv"
+      },
+      "failed": false
+    },
+    {
+      "agent": "model_developer",
+      "tool": "classification_tool",
+      "arguments": {
+        "data_source": "benchmarks/data/churn_train.csv",
+        "model_path": "models/churn_logistic_v1.pkl",
+        "target": "churned",
+        "hyperparameters": {
+          "epochs": 50,
+          "learning_rate": 0.01,
+          "class_weight": "balanced"
+        }
+      },
+      "failed": false
+    },
+    {
+      "agent": "model_developer",
+      "tool": "cross_validation_tool",
+      "arguments": {
+        "hyperparameters": {
+          "class_weight": "balanced",
+          "epochs": 50,
+          "learning_rate": 0.01
+        },
+        "data_source": "benchmarks/data/churn_train.csv",
+        "folds": 5,
+        "target": "churned"
+      },
+      "failed": false
+    },
+    {
+      "agent": "model_developer",
+      "tool": "hyperparameter_tuning_tool",
+      "arguments": {
+        "folds": 5,
+        "grid": {
+          "learning_rate": [
+            0.001,
+            0.01
+          ],
+          "epochs": [
+            50,
+            100
+          ]
+        },
+        "data_source": "benchmarks/data/churn_train.csv",
+        "target": "churned"
+      },
+      "failed": false
+    },
+    {
+      "agent": "model_developer",
+      "tool": "neural_network_tool",
+      "arguments": {
+        "hidden_units": 32,
+        "data_source": "benchmarks/data/churn_train.csv",
+        "epochs": 50,
+        "target": "churned",
+        "learning_rate": 0.01
+      },
+      "failed": false
+    },
+    {
+      "agent": "model_developer",
+      "tool": "ranking_tool",
+      "arguments": {
+        "model_path": "models/churn_logistic_v1.pkl",
+        "data_source": "benchmarks/data/churn_train.csv",
+        "top_k": 50
+      },
+      "failed": false
+    },
+    {
+      "agent": "evaluator",
+      "tool": "model_evaluation_tool",
+      "arguments": {
+        "model_path": "models/churn_logistic_v1.pkl"
+      },
+      "failed": false
+    },
+    {
+      "agent": "evaluator",
+      "tool": "performance_metrics_tool",
+      "arguments": {
+        "model_path": "models/churn_logistic_v1.pkl"
+      },
+      "failed": false
+    },
+    {
+      "agent": "evaluator",
+      "tool": "data_reader_tool",
+      "arguments": {
+        "data_source": "benchmarks/data/churn_holdout.csv"
+      },
+      "failed": false
+    },
+    {
+      "agent": "mlops",
+      "tool": "model_evaluation_tool",
+      "arguments": {
+        "threshold": 0.5,
+        "model_path": "models/churn_logistic_v1.pkl"
+      },
+      "failed": false
+    },
+    {
+      "agent": "mlops",
+      "tool": "mlops_integration_tool",
+      "arguments": {
+        "model_path": "models/churn_logistic_v1.pkl",
+        "deployment_environment": "production",
+        "monitoring_metrics": [
+          "input_drift_tenure_months",
+          "input_drift_contract_type",
+          "score_distribution_mean",
+          "prediction_precision_at_k",
+          "label_churn_rate_actual"
+        ]
+      },
+      "failed": false
+    },
+    {
+      "agent": "benchmark",
+      "tool": "benchmarking_tool",
+      "arguments": {
+        "model_path": "models/churn_logistic_v1.pkl",
+        "benchmark_dataset": "benchmarks/data/churn_holdout.csv",
+        "performance_metrics": [
+          "precision",
+          "recall",
+          "f1"
+        ]
+      },
+      "failed": false
+    },
+    {
+      "agent": "benchmark",
+      "tool": "ranking_tool",
+      "arguments": {
+        "top_k": 50,
+        "model_path": "models/churn_logistic_v1.pkl",
+        "data_source": "benchmarks/data/churn_holdout.csv"
+      },
+      "failed": false
+    }
+  ]
+}

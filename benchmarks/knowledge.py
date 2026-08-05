@@ -33,7 +33,7 @@ if __package__ in (None, ''):  # run as a script rather than `python -m benchmar
 
 from agent_builder import build_embeddings, build_text_db, build_vector_db, load_configs
 from benchmarks import tools
-from uilts.logger import logger
+from utils.logger import logger
 
 CONFIG_DIR = Path(__file__).parent
 
