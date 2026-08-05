@@ -1,0 +1,144 @@
+# The registries every builder resolves against: the name written in a pipeline's YAML (or passed as
+# `provider`, `db` or `type`) -> the dotted path of the class implementing it.
+#
+# Values are dotted paths rather than imported classes so nothing is pulled in until a builder resolves
+# one — importing `builder.factory` costs no provider SDK and no db driver. Adding a provider, an engine
+# or an agent type is an edit here plus the class it names, with no builder change.
+#
+# Read through `utils.defaults`, which is where the modules below take their registries from. This file
+# is the defaults shipped with the package; a pipeline's own YAML is a separate file and never merges
+# into this one.
+
+
+llm_callers:  # `llms.<name>.model` provider prefix, or a `provider_hints` match -> the caller class
+  claude: models.llms.ClaudeLLM
+  anthropic: models.llms.ClaudeLLM
+  openai: models.llms.OpenAILLM
+  google: models.llms.GoogleLLM
+  gemini: models.llms.GoogleLLM
+  grok: models.llms.GrokLLM
+  xai: models.llms.GrokLLM
+  ollama: models.llms.OllamaLLM
+  mistral: models.llms.MistralLLM
+  huggingface: models.llms.HuggingFaceInferenceLLM
+  hf: models.llms.HuggingFaceInferenceLLM
+
+
+embeddings_callers:
+  # Computed in-process rather than called: no key, no network, so retrieval works before a provider
+  # is chosen. Anthropic is deliberately absent from this registry — the Claude API has no embeddings
+  # endpoint, so there is nothing for a "claude" entry here to call.
+  local: models.embeddings.LocalEmbeddings
+  hashing: models.embeddings.LocalEmbeddings
+  openai: models.embeddings.OpenAIEmbeddings
+  google: models.embeddings.GoogleEmbeddings
+  gemini: models.embeddings.GoogleEmbeddings
+  huggingface: models.embeddings.HuggingFaceEmbeddings
+  hf: models.embeddings.HuggingFaceEmbeddings
+  mistral: models.embeddings.MistralEmbeddings
+  ollama: models.embeddings.OllamaEmbeddings
+
+
+vector_dbs:
+  faiss: db_connector.vector.FAISSDB
+  chroma: db_connector.vector.ChromaDB
+  chromadb: db_connector.vector.ChromaDB  # the driver's own name, which is what configs tend to say
+  qdrant: db_connector.vector.QdrantDB
+  pinecone: db_connector.vector.PineconeDB
+  weaviate: db_connector.vector.WeaviateDB
+  milvus: db_connector.vector.MilvusDB
+  lancedb: db_connector.vector.LanceDB
+
+
+text_dbs:
+  chroma: db_connector.text.ChromaTextDB
+  chromadb: db_connector.text.ChromaTextDB
+  elasticsearch: db_connector.text.ElasticsearchTextDB
+  opensearch: db_connector.text.OpenSearchTextDB
+  meilisearch: db_connector.text.MeilisearchTextDB
+  typesense: db_connector.text.TypesenseTextDB
+
+
+sql_dbs:
+  postgresql: db_connector.tabular.PostgreSQLDB
+  postgres: db_connector.tabular.PostgreSQLDB
+  mysql: db_connector.tabular.MySQLDB
+  sqlite: db_connector.tabular.SQLiteDB
+  duckdb: db_connector.tabular.DuckDBDB
+  snowflake: db_connector.tabular.SnowflakeDB
+  redshift: db_connector.tabular.RedshiftDB
+  bigquery: db_connector.tabular.BigQueryDB
+
+
+db_categories:
+  # `dbs.<name>.type` -> the engines that category can be connected with, and the configs whose fields
+  # those connectors take. `engines` names one of the registries above; `configs` is the dataclass a
+  # configured entry is parsed into, and the set of fields its connectors accept.
+  vector:
+    engines: vector_dbs
+    configs: utils.configs.VectorDBConfigs
+  text:
+    engines: text_dbs
+    configs: utils.configs.TextDBConfigs
+  sql:
+    engines: sql_dbs
+    configs: utils.configs.SQLDBConfigs
+
+
+agent_types:  # `agents.<name>.type` in a pipeline's YAML -> the class that runs that role
+  generator: builder.agents.WorkerAgent
+  worker: builder.agents.WorkerAgent
+  judger: builder.agents.JudgerAgent
+  classifier: builder.agents.ClassifierAgent
+  planner: builder.agents.PlannerAgent
+  thinker: builder.agents.PlannerAgent
+  rag: builder.agents.RAGBuilderAgent
+  rag_builder: builder.agents.RAGBuilderAgent
+  retriever: builder.agents.RAGBuilderAgent
+
+
+provider_hints:
+  # Substring of a model id -> the provider that serves it. This is what makes `model: "claude-sonnet-5"`
+  # enough on its own, with no `provider/` prefix and no `provider:` key. Matched in order, so a more
+  # specific substring belongs above a more general one.
+  claude: claude
+  anthropic: claude
+  gpt: openai
+  text-embedding: openai
+  gemini: google
+  bison: google
+  gecko: google
+  vertexai: google
+  grok: grok
+  mixtral: mistral
+  mistral: mistral
+  ollama: ollama
+  llama: huggingface
+
+
+json_schema_types:  # a tool's `args[].type` as written in the YAML -> the JSON Schema type it becomes
+  str: string
+  string: string
+  text: string
+  int: integer
+  integer: integer
+  float: number
+  number: number
+  bool: boolean
+  boolean: boolean
+  list: array
+  array: array
+  dict: object
+  object: object
+
+
+tool_dialects:  # BaseLLM subclass -> the tool-schema dialect that provider expects
+  ClaudeLLM: anthropic
+  GoogleLLM: google
+
+
+defaults:
+  tool_dialect: openai  # every other caller in models.llms speaks the OpenAI tools dialect
+  max_tokens: 1024  # BaseLLM has no default of its own, and every provider requires the field
+  max_tool_result_chars: 6000  # a tool result longer than this is truncated before it goes back
+  document_field: document  # field every text connector stores a record's text under

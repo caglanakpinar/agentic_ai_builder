@@ -1,8 +1,8 @@
 import re
 from pathlib import Path
 
-from uilts.configs import Configs, AgentConfigs
-from uilts.logger import logger
+from utils.configs import Configs, AgentConfigs
+from utils.logger import logger
 
 
 PLACEHOLDER_PATTERN = re.compile(r"\{(\w+)\}")  # matches {argument_name} placeholders in a .md prompt

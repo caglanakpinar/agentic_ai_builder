@@ -15,12 +15,14 @@ from huggingface_hub import InferenceClient
 from google import genai
 from google.genai import types as genai_types
 
-from uilts.configs import Configs
-from uilts.logger import logger
-from uilts.configs import LLMConfigs, resolve_secret
+from utils.configs import Configs
+from utils.logger import logger
+from utils.configs import LLMConfigs, resolve_secret
 
 
-MAX_TOOL_RESULT_CHARS = 6000  # a tool result longer than this is truncated before it goes back to the model
+# A tool result longer than this is truncated before it goes back to the model. From `defaults:` in
+# `utils/default_config.yaml`.
+MAX_TOOL_RESULT_CHARS: int = Configs.setting("max_tool_result_chars")
 
 
 def first_value(source: Any, *names: str, default: Any = '?') -> Any:

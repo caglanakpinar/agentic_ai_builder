@@ -2,8 +2,8 @@ from abc import abstractmethod
 from pathlib import Path
 from typing import Any
 
-from uilts.configs import VectorDBConfigs, resolve_secret
-from uilts.logger import logger
+from utils.configs import VectorDBConfigs, resolve_secret
+from utils.logger import logger
 
 
 class BaseVectorDB(VectorDBConfigs):

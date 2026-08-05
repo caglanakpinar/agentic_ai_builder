@@ -503,7 +503,7 @@ connector can be passed to `build_agent` instead, which is how a pipeline opens 
 | [agent_builder.py](agent_builder.py) | The public import surface — every builder, config and class, exported in one place |
 | [builder/factory.py](builder/factory.py) | The builders themselves, and the registries mapping YAML names to classes |
 | [cli.py](cli.py) | The `agentic-ai` command: a thin command line over those builders |
-| [uilts/configs.py](uilts/configs.py) | Reads the YAML into the `*Configs` dataclasses everything else is built from |
+| [utils/configs.py](utils/configs.py) | Reads the YAML into the `*Configs` dataclasses everything else is built from |
 | [builder/agents.py](builder/agents.py) | The agent classes — worker, judger, classifier, planner, RAG builder |
 | [builder/prompts.py](builder/prompts.py) | Reads an agent's `.md` prompts and fills in their `{arguments}` |
 | [builder/tools.py](builder/tools.py) | Imports tool functions and renders their schemas per provider |

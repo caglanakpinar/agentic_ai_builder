@@ -12,8 +12,8 @@ from huggingface_hub import InferenceClient
 from google import genai
 from google.genai import types as genai_types
 
-from uilts.configs import EmbeddingsConfigs, resolve_secret
-from uilts.logger import logger
+from utils.configs import EmbeddingsConfigs, resolve_secret
+from utils.logger import logger
 
 
 class BaseEmbeddings(EmbeddingsConfigs):

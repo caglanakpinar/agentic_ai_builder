@@ -3,31 +3,15 @@ import inspect
 from dataclasses import asdict
 from typing import Any, Callable
 
-from uilts.configs import AgentConfigs, Configs, ToolConfigs
-from uilts.logger import logger
+from utils.configs import AgentConfigs, Configs, ToolConfigs
+from utils.logger import logger
 
 
-JSON_SCHEMA_TYPES: dict[str, str] = {  # `args[].type` as written in the YAML -> JSON Schema type
-    "str": "string",
-    "string": "string",
-    "text": "string",
-    "int": "integer",
-    "integer": "integer",
-    "float": "number",
-    "number": "number",
-    "bool": "boolean",
-    "boolean": "boolean",
-    "list": "array",
-    "array": "array",
-    "dict": "object",
-    "object": "object",
-}
-
-PROVIDER_BY_LLM: dict[str, str] = {  # BaseLLM subclass -> tool-schema dialect that provider expects
-    "ClaudeLLM": "anthropic",
-    "GoogleLLM": "google",
-}
-DEFAULT_PROVIDER = "openai"  # every other caller in models.llms speaks the OpenAI tools dialect
+# All three come from `utils/default_config.yaml`: the type names a tool's `args[].type` accepts, the
+# providers whose tool schemas differ from OpenAI's, and the dialect everyone else speaks.
+JSON_SCHEMA_TYPES: dict[str, str] = Configs.registry("json_schema_types")
+PROVIDER_BY_LLM: dict[str, str] = Configs.registry("tool_dialects")
+DEFAULT_PROVIDER: str = Configs.setting("tool_dialect")
 
 
 def import_function(caller: str, tool_name: str) -> Callable[..., Any] | None:
