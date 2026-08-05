@@ -9,6 +9,9 @@ without asking you a follow-up question. You are not solving it yet, and you are
 
 ## What is known about the data
 
+The data profile below is measured. Retrieved practice notes may follow it — those are reference
+material about how problems like this are usually framed, not facts about this dataset.
+
 {context}
 
 ## What to produce
@@ -31,6 +34,9 @@ without asking you a follow-up question. You are not solving it yet, and you are
 ## Rules
 
 - Ground every claim in the profile above. If you cite a rate, a count or a column, it must appear there.
+- A retrieved note can justify *how* you decide — which metric suits this base rate, what a fixed weekly
+  capacity implies — but never supplies a number about this dataset. Reasoning from one is right;
+  quoting a figure out of one as measured is a fabrication.
 - Do not propose a model, an algorithm or a library. That is the next agent's job.
 - If something you need is missing from the profile, write it under **Unknowns** rather than assuming it.
 - Be specific and short. No preamble, no restating the request back.

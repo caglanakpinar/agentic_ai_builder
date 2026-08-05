@@ -1,6 +1,7 @@
 """Runs the benchmark: builds the agentic workflow from the YAML and puts it to work on the churn problem.
 
     python benchmarks/dataset.py            # write the dataset (once)
+    python benchmarks/knowledge.py          # fill the knowledge base the first agent retrieves from (once)
     python benchmarks/run_benchmark.py      # build the workflow, run the tool chain, render the prompts
     python benchmarks/run_benchmark.py --live   # ...and actually call the models
 
@@ -30,7 +31,13 @@ from typing import Any
 if __package__ in (None, ''):  # run as a script rather than `python -m benchmarks.run_benchmark`
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent_builder import build_agent, load_configs
+from agent_builder import (
+    build_agent,
+    build_embeddings,
+    build_text_db,
+    build_vector_db,
+    load_configs,
+)
 from benchmarks import tools
 from uilts.configs import ENV_VAR_NAME
 from uilts.logger import logger
@@ -497,9 +504,79 @@ def stand_in_for_missing_keys(configs) -> list[str]:
     return sorted(set(stood_in))
 
 
+def retrieval_connectors(configs) -> dict[str, dict[str, object]]:
+    """Connect the embeddings caller and the two dbs each retrieving agent needs, before any is built.
+
+    Retrieval here is a three-part chain — embed the question, ask the vector db which documents are
+    nearest, read those documents out of the text db — and a missing part is silent: the agent answers
+    from the context it was given, and the run looks the same as one where retrieval worked. So each
+    part is connected here, up front, where a failure can be reported against the agent that needed it.
+
+    Each db is connected once and shared by every agent naming it. Chroma and FAISS are embedded engines
+    holding a directory, and opening the same one per agent is at best wasted work — Chroma's persistent
+    client will not open a store twice in a process at all.
+    """
+    connectors: dict[tuple[str, str], object] = {}
+
+    def connect(kind: str, build, name: str | None) -> object | None:
+        if not name:
+            return None
+        if (kind, name) not in connectors:
+            try:
+                connectors[(kind, name)] = build(name, configs)
+            except Exception as error:
+                logger.warning(f"Could not connect {kind} {name!r}: {error}")
+                connectors[(kind, name)] = None
+        return connectors[(kind, name)]
+
+    wiring: dict[str, dict[str, object]] = {}
+    for name, config in configs.agent_configs.items():
+        if not (config.db_vector or config.db_text or config.embedding):
+            continue
+
+        wiring[name] = {
+            "db_vector_connector": connect("vector db", build_vector_db, config.db_vector),
+            "db_text_connector": connect("text db", build_text_db, config.db_text),
+            "embeddings_connector": connect("embeddings", build_embeddings, config.embedding),
+        }
+
+    return wiring
+
+
 def workflow(configs) -> dict[str, object]:
-    """Build every agent the pipeline references, exactly as configured."""
-    return {name: build_agent(name, configs) for name in configs.agent_configs}
+    """Build every agent the pipeline references, with any retrieval connectors it needs already open."""
+    wiring = retrieval_connectors(configs)
+    return {
+        name: build_agent(name, configs, **wiring.get(name, {}))
+        for name in configs.agent_configs
+    }
+
+
+def retrieval_report(agent: object) -> str:
+    """One line saying what an agent retrieves through, and whether there is anything there to find."""
+    if not any((
+        getattr(agent, "db_vector_connector", None),
+        getattr(agent, "db_text_connector", None),
+        getattr(agent, "embeddings_connector", None),
+    )):
+        return ''
+
+    vector = getattr(agent, "db_vector_connector", None)
+    text = getattr(agent, "db_text_connector", None)
+    embeddings = getattr(agent, "embeddings_connector", None)
+
+    def holding(connector: object, label: str) -> str:
+        if not connector:
+            return f"{label}: (not connected)"
+        try:
+            return f"{label}: {connector.name} [{connector.count()}]"
+        except Exception as error:  # a store that connected but cannot be read is worth naming too
+            return f"{label}: {connector.name} (unreadable: {error})"
+
+    embedder = f"{embeddings.model_name}" if embeddings else "(no embeddings)"
+    ready = "" if getattr(agent, "retrieves", lambda: False)() else "  — retrieval off, context only"
+    return (f"  {'':<28} retrieves:  {holding(vector, 'vectors')}, {holding(text, 'documents')}"
+            f", via {embedder}{ready}")
 
 
 def render(agents: dict[str, object], context: str, outputs: dict[str, str] | None = None) -> dict[str, str]:
@@ -691,11 +768,15 @@ def run(arguments) -> None:
     print(f"\n{'=' * 96}\nWORKFLOW — built from {tools.shown(arguments.config_dir)}\n{'=' * 96}")
     for name, agent in agents.items():
         upstream = dependencies_of(configs, name)
-        print(
-            f"  {name:<28} {type(agent).__name__:<18} {type(agent.llm).__name__}({agent.llm.model_name})"
-            f"\n  {'':<28} works from: {', '.join(upstream) if upstream else '(starts the run)'}"
-            f"\n  {'':<28} tools:      {', '.join(agent.toolbox.agent_tools) if agent.toolbox else '-'}"
-        )
+        lines = [
+            f"  {name:<28} {type(agent).__name__:<18} {type(agent.llm).__name__}({agent.llm.model_name})",
+            f"  {'':<28} works from: {', '.join(upstream) if upstream else '(starts the run)'}",
+            f"  {'':<28} tools:      {', '.join(agent.toolbox.agent_tools) if agent.toolbox else '-'}",
+        ]
+        retrieval = retrieval_report(agent)
+        if retrieval:
+            lines.append(retrieval)
+        print("\n".join(lines))
 
     gates = gate_report(configs, measured.get("measurements") or {}) if measured else []
     if gates:

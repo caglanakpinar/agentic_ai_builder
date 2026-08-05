@@ -9,6 +9,9 @@ Our subscription business is losing customers and we don't know which ones to wo
 
 ## What is known about the data
 
+The data profile below is measured. Retrieved practice notes may follow it — those are reference
+material about how problems like this are usually framed, not facts about this dataset.
+
 Dataset: benchmarks/data/churn_train.csv (training), benchmarks/data/churn_holdout.csv (holdout)
 
 Shape: 2415 rows x 12 columns, one row per customer.
@@ -70,6 +73,9 @@ who is at the top of the list, not only how well the model separates overall.
 ## Rules
 
 - Ground every claim in the profile above. If you cite a rate, a count or a column, it must appear there.
+- A retrieved note can justify *how* you decide — which metric suits this base rate, what a fixed weekly
+  capacity implies — but never supplies a number about this dataset. Reasoning from one is right;
+  quoting a figure out of one as measured is a fabrication.
 - Do not propose a model, an algorithm or a library. That is the next agent's job.
 - If something you need is missing from the profile, write it under **Unknowns** rather than assuming it.
 - Be specific and short. No preamble, no restating the request back.

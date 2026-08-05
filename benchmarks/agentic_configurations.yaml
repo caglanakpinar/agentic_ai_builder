@@ -6,6 +6,7 @@
 # actually computed.
 #
 #   python benchmarks/dataset.py          # write the dataset
+#   python benchmarks/knowledge.py        # fill the knowledge base the first agent retrieves from
 #   python benchmarks/run_benchmark.py    # build the workflow, render its prompts, run the tool chain
 #   python benchmarks/run_benchmark.py --live   # ...and call the models (needs GEMINI / CLAUDE set)
 
@@ -51,14 +52,20 @@ llms:
 
 
 dbs:
-  # The knowledge base the problem thinker retrieves from once `rag_problem_thinker_agent.type` is
-  # switched to "rag". `dimension` must match the width of the embeddings model below.
+  # The knowledge base `rag_problem_thinker_agent` retrieves from, split across two stores: the vector db
+  # answers "which notes are closest to this question" with ids, and the text db turns those ids into the
+  # notes. Both are written by `python benchmarks/knowledge.py` — until they exist, the vector search
+  # matches nothing and the agent works from the dataset profile alone.
   - name: "ds_knowledge_db"
     type: "vector"
     db: "faiss"
     path: "benchmarks/artifacts/ds_knowledge.index"
-    dimension: 3072
+    dimension: 3072  # must match the width the embeddings model below returns
     metric: "cosine"
+  - name: "ds_knowledge_text_db"
+    type: "text"
+    db: "chromadb"  # embedded, so the documents are a directory rather than a search server
+    path: "benchmarks/artifacts/ds_knowledge_text"
 
 
 embeddings:
@@ -505,8 +512,14 @@ tools:
 
 agents:
   rag_problem_thinker_agent:  # starts the run — no dependency_agent
-    type: "thinker"  # switch to "rag" to retrieve from ds_knowledge_db before answering
+    # Retrieves before it answers: `embedding` turns the question into a vector, `db_vector` returns the
+    # ids of the nearest notes, `db_text` turns those ids into the notes themselves. All three are needed
+    # — with any of them missing the agent still runs, on the dataset profile alone.
+    type: "rag"
     db_vector: "ds_knowledge_db"
+    db_text: "ds_knowledge_text_db"
+    embedding: "rag_embeddings"
+    dependency_agent: null
     llm: "rag_llm"
     substitute_llm: "generator_llm_thinker"
     prompt_path: "benchmarks/prompts/rag_problem_thinker_prompt.md"
