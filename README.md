@@ -141,7 +141,7 @@ Provider-specific options (`top_p`, `thinking`, `response_format`, `stop`, …) 
 ### `embeddings:`
 
 The models a RAG agent turns its question into a vector with. OpenAI, Google, Hugging Face, Mistral and
-Ollama are supported — see [models/embeddings.py](models/embeddings.py).
+Ollama are supported, plus `local` — see [models/embeddings.py](models/embeddings.py).
 
 ```yaml
 embeddings:
@@ -149,6 +149,12 @@ embeddings:
     model: "openai/text-embedding-3-small"
     api_key: OPENAI_API_KEY
 ```
+
+`local/hashing-<width>` is the one that calls nobody: it hashes words and word pairs into a vector of
+that width, in-process, with no key and no download. It matches wording rather than meaning, so it is a
+way to get retrieval running — offline, in CI, before a provider is chosen — not a replacement for a
+trained model. **There is no Claude option**: the Anthropic API has no embeddings endpoint, so an
+Anthropic key cannot serve retrieval however the config is written.
 
 ### `dbs:`
 
@@ -193,6 +199,12 @@ The registry agents pick their tools from. `caller` points at the Python functio
 full dotted path to the function or as a module whose function is named after the tool. `args` becomes
 the JSON Schema the provider validates the model's tool calls against, rendered into whichever dialect
 that agent's provider speaks.
+
+Tools are **executed**, not merely offered: every caller runs the ask → execute → answer loop until the
+model stops asking. The loop itself lives once, in `BaseAgent.run_with_tools`; a provider supplies only
+four translation methods (`converse`, `read_turn`, `assistant_turn`, `tool_result_turns`). Three dialects
+cover them all — Anthropic, the OpenAI-compatible one shared by OpenAI/Grok/Ollama/Mistral/Hugging Face,
+and Gemini's `function_call`/`function_response` parts.
 
 ```yaml
 tools:

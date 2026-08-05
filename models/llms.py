@@ -23,6 +23,16 @@ from uilts.configs import LLMConfigs, resolve_secret
 MAX_TOOL_RESULT_CHARS = 6000  # a tool result longer than this is truncated before it goes back to the model
 
 
+def first_value(source: Any, *names: str, default: Any = '?') -> Any:
+    """Read the first of `names` that `source` actually carries — one field under several providers' names."""
+    for name in names:
+        value = getattr(source, name, None)
+        if value is not None:
+            return value
+
+    return default
+
+
 @dataclass
 class ToolCall:
     """One tool the model asked for, in the same shape whatever provider asked for it."""
@@ -168,15 +178,30 @@ class BaseLLM(LLMConfigs):
         """
         tokens = ''
         if usage is not None:
-            thinking = getattr(getattr(usage, "output_tokens_details", None), "thinking_tokens", None)
+            # The same two numbers, named differently by each provider: Anthropic sends
+            # `input_tokens`/`output_tokens`, OpenAI `prompt_tokens`/`completion_tokens`, Gemini
+            # `prompt_token_count`/`candidates_token_count`. Reading only one set logs `?/?` for
+            # everyone else, which is how a run ends up with no record of what it cost.
+            sent = first_value(usage, "input_tokens", "prompt_tokens", "prompt_token_count")
+            produced = first_value(usage, "output_tokens", "completion_tokens", "candidates_token_count")
+            # Thinking tokens are nested one level down and named differently again: Anthropic under
+            # `output_tokens_details.thinking_tokens`, OpenAI under
+            # `completion_tokens_details.reasoning_tokens`, Gemini straight on the usage object.
+            details = (
+                getattr(usage, "output_tokens_details", None)
+                or getattr(usage, "completion_tokens_details", None)
+            )
+            thinking = first_value(details, "thinking_tokens", "reasoning_tokens", default=None)
+            thinking = thinking or getattr(usage, "thoughts_token_count", None)
             tokens = (
-                f", tokens in/out={getattr(usage, 'input_tokens', '?')}/{getattr(usage, 'output_tokens', '?')}"
+                f", tokens in/out={sent}/{produced}"
                 f"{f' (thinking {thinking})' if thinking else ''}"
             )
 
         logger.info(f"{self.model_name}: stop_reason={stop_reason}{tokens}{detail}")
 
-        if stop_reason in ("max_tokens", "length"):
+        # Providers spell the truncation reason differently too — `max_tokens`, `length`, `MAX_TOKENS`.
+        if str(stop_reason).lower().removeprefix("finishreason.") in ("max_tokens", "length"):
             logger.warning(
                 f"{self.model_name} hit max_tokens ({self.max_tokens}) and its answer is truncated. "
                 "Thinking tokens count against the same ceiling — raise `max_tokens` for this llm."
@@ -530,8 +555,134 @@ class GoogleLLM(BaseLLM):
             contents=prompt,
             config=genai_types.GenerateContentConfig(**config_kwargs),
         )
-        self.log_response(None, getattr(response, "usage_metadata", None))
-        return str(response.text or "").strip()
+        self.log_response(self.finish_reason(response), getattr(response, "usage_metadata", None))
+
+        # Read the parts rather than `response.text`: a response mixing text with a function call has no
+        # `.text` at all, so a turn that asked for a tool used to come back as zero characters of output.
+        asked_for = [
+            part.function_call.name for part in self.parts_of(response)
+            if getattr(part, "function_call", None)
+        ]
+        if asked_for:
+            logger.warning(
+                f"{self.model_name} stopped to call {asked_for}, which this caller does not run — "
+                "the text below is only what it said before asking."
+            )
+
+        return self.text_of(response)
+
+    # ---- tool-use round trip, in the Gemini dialect --------------------------------------------------
+    runs_tools = True
+
+    @staticmethod
+    def parts_of(response: Any) -> list[Any]:
+        """The parts of the first candidate — where Gemini puts both the text and the function calls."""
+        candidates = getattr(response, "candidates", None) or []
+        content = getattr(candidates[0], "content", None) if candidates else None
+        return list(getattr(content, "parts", None) or [])
+
+    @classmethod
+    def text_of(cls, response: Any) -> str:
+        """Every text part joined — what the model actually said, whatever else the turn carried."""
+        return "".join(
+            part.text for part in cls.parts_of(response) if getattr(part, "text", None)
+        ).strip()
+
+    @staticmethod
+    def finish_reason(response: Any) -> str | None:
+        """Why generation stopped. Gemini reports it per candidate, not on the response itself."""
+        candidates = getattr(response, "candidates", None) or []
+        reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+        if reason is None:
+            return None
+
+        return str(getattr(reason, "name", None) or reason)  # "MAX_TOKENS", not "FinishReason.MAX_TOKENS"
+
+    def as_contents(self, messages: list[Any]) -> list[Any]:
+        """Translate the loop's messages into the `contents` Gemini takes.
+
+        The loop opens with `{"role": "user", "content": prompt}` — the shape Anthropic and OpenAI both
+        accept — and Gemini rejects it outright: it wants `{"role": "user", "parts": [{"text": ...}]}`.
+        The turns this class appends are already in that shape and pass through untouched, so this only
+        rewrites the opening message, and renames `assistant` to the `model` role Gemini uses for its own.
+        """
+        contents = []
+        for message in messages:
+            if not isinstance(message, dict) or "parts" in message:
+                contents.append(message)  # a Content object, or a turn this class already built
+                continue
+
+            role = "model" if message.get("role") == "assistant" else message.get("role", "user")
+            contents.append({"role": role, "parts": [{"text": str(message.get("content", ''))}]})
+
+        return contents
+
+    def converse(self, messages: list[Any], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> Any:
+        config_kwargs: dict[str, Any] = {
+            "max_output_tokens": int(kwargs.pop("max_tokens", self.max_tokens)),
+            **self.optional_arguments('temperature', 'tools', tools=tools, **kwargs),
+        }
+
+        response = self.model_client.models.generate_content(
+            model=self.model_name,
+            contents=self.as_contents(messages),
+            config=genai_types.GenerateContentConfig(**config_kwargs),
+        )
+        parts = [
+            "function_call" if getattr(part, "function_call", None) else "text"
+            for part in self.parts_of(response)
+        ]
+        self.log_response(
+            self.finish_reason(response), getattr(response, "usage_metadata", None), f", parts={parts}"
+        )
+        return response
+
+    def read_turn(self, response: Any) -> tuple[str, list[ToolCall]]:
+        calls = []
+        for position, part in enumerate(self.parts_of(response)):
+            call = getattr(part, "function_call", None)
+            if not call:
+                continue
+
+            # Gemini matches a result back to its call by function name, and only some surfaces send an
+            # id at all — so one is made up when it is absent, since the loop keys its record on it.
+            calls.append(ToolCall(
+                id=getattr(call, "id", None) or f"{call.name}-{position}",
+                name=call.name,
+                arguments=dict(call.args or {}),
+            ))
+
+        return self.text_of(response), calls
+
+    def assistant_turn(self, response: Any) -> Any:
+        """Return the response as a message to append, so the next turn sees what was already said.
+        """
+        # The candidate's own content goes back exactly as it arrived — a `function_call` part has to
+        # reach the next request unchanged or the `function_response` answering it has nothing to attach
+        # to, and Gemini rejects the turn.
+        candidates = getattr(response, "candidates", None) or []
+        content = getattr(candidates[0], "content", None) if candidates else None
+        return content or {"role": "model", "parts": [{"text": self.text_of(response)}]}
+
+    def tool_result_turns(self, results: list[tuple[ToolCall, Any]]) -> list[dict[str, Any]]:
+        # Gemini takes every result for a turn in one user message, each keyed by the function's name
+        # rather than by a call id, and each response is a mapping rather than a string.
+        return [{
+            "role": "user",
+            "parts": [
+                {
+                    "function_response": {
+                        "name": call.name,
+                        "response": (
+                            {"error": result.message}
+                            if isinstance(result, ToolFailure)
+                            else {"result": as_tool_content(result)}
+                        ),
+                    }
+                }
+                for call, result in results
+            ],
+        }]
 
 
 class GrokLLM(OpenAIToolDialect, BaseLLM):
@@ -562,6 +713,7 @@ class GrokLLM(OpenAIToolDialect, BaseLLM):
         return str(response.choices[0].message.content or "").strip()
 
     def converse(self, messages: list[Any], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> Any:
+        """Run one turn of a tool-using conversation and return the provider's own response object."""
         response = self.model_client.chat.completions.create(
             model=self.model_name,
             max_tokens=int(kwargs.pop("max_tokens", self.max_tokens)),
@@ -572,7 +724,6 @@ class GrokLLM(OpenAIToolDialect, BaseLLM):
             getattr(response.choices[0], "finish_reason", None), getattr(response, "usage", None)
         )
         return response
-
 
 
 class OllamaLLM(OpenAIToolDialect, BaseLLM):
