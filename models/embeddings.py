@@ -55,6 +55,14 @@ class BaseEmbeddings(EmbeddingsConfigs):
     def _call(self, text: str, **kwargs: Any) -> list[float]:
         """Embed a single text and return its embedding vector."""
 
+    def embed_text(self, text: str, **kwargs: Any) -> list[float]:
+        """Embed one text — what a caller asks for, over the `_call` each provider implements."""
+        return self._call(text, **kwargs)
+
+    def embed_texts(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
+        """Embed several texts, one call each — how a knowledge base is written in the first place."""
+        return [self._call(text, **kwargs) for text in texts]
+
 
 class OpenAIEmbeddings(BaseEmbeddings):
     """OpenAI Embeddings API caller, via the `openai` SDK's `embeddings.create`.

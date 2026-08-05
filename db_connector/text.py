@@ -188,6 +188,93 @@ class BaseTextDB(TextDBConfigs):
         self.client = None
 
 
+class ChromaTextDB(BaseTextDB):
+    """Chroma as a document store, via `chromadb` — the text half of a split retrieval flow.
+
+    Chroma is a vector database, but nothing here searches it: a text db is only ever asked to turn the
+    ids a vector search returned into the documents behind them, and that is `get(ids=...)`, a lookup
+    that touches no index. So the collection is opened with `embedding_function=None` — no model is
+    downloaded, no text is embedded on write, and the vectors stay in the vector db where the search
+    happens. It is the engine to reach for when the knowledge base should live in a directory rather
+    than behind a search server.
+
+    Runs embedded against `path`, or against a Chroma server when `host` is set. Chroma has no fetch-time
+    filter that matches the rest of this interface, so `filter` is applied to the returned metadata here.
+    Extra params: `tenant`, `database`.
+    """
+
+    tenant: str | None = None  # multi-tenant deployments only
+    database: str | None = None  # database within the tenant
+    arguments: list[str] = [
+        'tenant',
+        'database',
+    ]
+
+    def _initialize_connection(self, **kwargs: Any) -> None:
+        import chromadb
+
+        connect_kwargs = self._connect_kwargs(**kwargs)
+        if self.host:
+            client = chromadb.HttpClient(host=self.host, port=self.port or 8000, **connect_kwargs)
+        else:
+            client = chromadb.PersistentClient(path=self.path or "./chroma", **connect_kwargs)
+
+        self.client = client.get_or_create_collection(
+            name=self.collection_name,
+            embedding_function=None,  # this store is a lookup; embedding here would be a second, unused copy
+        )
+        logger.info(f"{self.name} opened collection {self.collection_name} holding {self.count()} documents.")
+
+    def upsert(
+        self,
+        ids: list[str],
+        documents: list[str],
+        metadatas: list[dict[str, Any]] | None = None,
+    ) -> None:
+        # Validates that the documents line up with the ids. The merged bodies it returns are not what
+        # Chroma is written, though: it stores the text and the metadata in separate fields of its own.
+        self._documents_and_metadatas(ids, documents, metadatas)
+
+        records = [dict(metadata) for metadata in (metadatas or [])]
+        self.client.upsert(
+            ids=[str(id) for id in ids],
+            documents=list(documents),
+            # Chroma refuses an empty metadata dict, so metadata is sent only when every record carries some.
+            metadatas=records if len(records) == len(ids) and all(records) else None,
+        )
+        logger.info(f"{self.name} upserted {len(ids)} documents.")
+
+    def query(
+        self,
+        indexes: list[str],
+        top_k: int | None = None,
+        filter: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        response = self.client.get(ids=[str(index) for index in indexes])
+
+        documents = response.get("documents") or []
+        metadatas = response.get("metadatas") or []
+        results = []
+        for position, id in enumerate(response.get("ids") or []):
+            metadata = metadatas[position] if position < len(metadatas) else {}
+            if not self._matches(metadata or {}, filter):
+                continue
+            results.append({
+                "id": id,
+                "metadata": metadata or {},
+                "document": documents[position] if position < len(documents) else None,
+            })
+
+        logger.info(f"{self.name} fetched {len(results)} of {len(indexes)} requested documents.")
+        return self._ordered_results(results, indexes, top_k)
+
+    def delete(self, ids: list[str]) -> None:
+        self.client.delete(ids=[str(id) for id in ids])
+
+    def count(self) -> int:
+        return int(self.client.count())
+
+
 class ElasticsearchTextDB(BaseTextDB):
     """Elasticsearch connector, via the `elasticsearch` client.
 

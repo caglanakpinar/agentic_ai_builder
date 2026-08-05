@@ -178,11 +178,14 @@ dbs:
 | Category | Engines |
 | --- | --- |
 | `vector` | `faiss`, `chroma`, `qdrant`, `pinecone`, `weaviate`, `milvus`, `lancedb` |
-| `text` | `elasticsearch`, `opensearch`, `meilisearch`, `typesense` |
+| `text` | `chroma`, `elasticsearch`, `opensearch`, `meilisearch`, `typesense` |
 | `sql` | `postgresql`, `mysql`, `sqlite`, `duckdb`, `snowflake`, `redshift`, `bigquery` |
 
 Vector and text dbs are the two halves of one retrieval flow: the vector db runs the similarity search
-and returns ids, and the text db turns those ids into the documents an agent puts in its prompt.
+and returns ids, and the text db turns those ids into the documents an agent puts in its prompt. Chroma
+appears in both categories and does a different job in each — as a vector db it searches, as a text db it
+is a lookup store opened with no embedding function at all, which is what a knowledge base that lives in
+a directory rather than behind a search server looks like.
 
 ### `tools:`
 
@@ -222,9 +225,15 @@ agents:
       - "echo_tool"
     mcp_servers:
       - "mc_server_1"
-    db_vector: "knowledge_db"        # for a rag agent: where it retrieves from
-    db_text: "knowledge_docs"        # for a rag agent: where the documents live
+    db_vector: "knowledge_db"        # for a rag agent: which db it searches for the nearest documents
+    db_text: "knowledge_docs"        # for a rag agent: which db turns the ids it found into documents
+    embedding: "rag_embeddings"      # for a rag agent: what it turns its question into a vector with
 ```
+
+A retrieving agent needs all three: `embedding` embeds the question, `db_vector` answers with the ids of
+the nearest documents, and `db_text` turns those ids into the documents themselves. With any of them
+missing or unreachable the agent still runs — it generates over the context it was given and logs what
+was missing — so a pipeline works before its knowledge base is filled.
 
 | `type` | Class | What it does |
 | --- | --- | --- |
@@ -464,9 +473,10 @@ agentic-ai generate agent -c my_pipeline --name scratch_agent --type generator \
 ```
 
 Prints the agent class, the LLM behind it, the tools that turned out to be importable, and the dbs it is
-wired to. For a RAG agent it also builds the vector db, text db and embeddings caller it retrieves
-through; one that can't be built is reported as a warning and left unwired rather than failing the
-command, since `RAGBuilderAgent` falls back to the caller-supplied context.
+wired to. An agent naming a vector db, text db or embeddings caller gets them connected while it is
+built; one that can't be built is reported as a warning and left unwired rather than failing the
+command, since `RAGBuilderAgent` falls back to the caller-supplied context. An already-connected
+connector can be passed to `build_agent` instead, which is how a pipeline opens a db once and shares it.
 
 `--type · --prompt · --responsiblity-prompt · --tool · --mcp-server · --db-vector · --db-text · --db-sql ·
 --embeddings · --label · --llm · --substitute-llm · --provider · --model-name · --api-key · --temperature ·

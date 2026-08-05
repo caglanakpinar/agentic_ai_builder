@@ -66,6 +66,7 @@ class AgentConfigs:
     db_vector: str | None = None  # name of the vector db this agent retrieves from, e.g. "ds_knowledge_db"
     db_text: str | None = None  # name of the text db this agent searches, e.g. "ds_knowledge_db_text"
     db_sql: str | None = None  # name of the tabular db this agent queries, e.g. "authentication_db"
+    embedding: str | None = None  # name of the embeddings caller this agent turns its query into a vector with
     prompt: str | None = None  # directory (relative to Configs.current_dir) containing one file per prompt, e.g. "prompts/rag_problem_thinker_agent"
     prompt_path: str | None = None  # a single .md file to use as this agent's prompt, when it has only one
     thresholds: dict[str, Any] | None = None  # the bars a judger holds work to, e.g. {"min_roc_auc": 0.7}
@@ -283,6 +284,7 @@ class Configs:
                     llms=agent_cfg.get('llms', None),
                     db_vector=agent_cfg.get('db_vector', None),
                     db_text=agent_cfg.get('db_text', None),
+                    embedding=agent_cfg.get('embedding', None),
                     db_sql=agent_cfg.get('db_sql', None),
                     prompt=agent_cfg.get('prompt', None),
                     prompt_path=agent_cfg.get('prompt_path', None),

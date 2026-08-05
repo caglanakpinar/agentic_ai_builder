@@ -65,6 +65,7 @@ EMBEDDINGS: dict[str, str] = {
 VECTOR_DBS: dict[str, str] = {
     "faiss": "db_connector.vector.FAISSDB",
     "chroma": "db_connector.vector.ChromaDB",
+    "chromadb": "db_connector.vector.ChromaDB",  # the driver's own name, which is what configs tend to say
     "qdrant": "db_connector.vector.QdrantDB",
     "pinecone": "db_connector.vector.PineconeDB",
     "weaviate": "db_connector.vector.WeaviateDB",
@@ -73,6 +74,8 @@ VECTOR_DBS: dict[str, str] = {
 }
 
 TEXT_DBS: dict[str, str] = {
+    "chroma": "db_connector.text.ChromaTextDB",
+    "chromadb": "db_connector.text.ChromaTextDB",
     "elasticsearch": "db_connector.text.ElasticsearchTextDB",
     "opensearch": "db_connector.text.OpenSearchTextDB",
     "meilisearch": "db_connector.text.MeilisearchTextDB",
@@ -420,6 +423,9 @@ def build_agent(
     llm: Any = None,
     substitute_llm: Any = None,
     embeddings: str | None = None,
+    db_vector_connector: Any = None,
+    db_text_connector: Any = None,
+    embeddings_connector: Any = None,
     labels: Sequence[str] = (),
     provider: str | None = None,
     model_name: str | None = None,
@@ -432,8 +438,8 @@ def build_agent(
     """Build one agent from a configured `agents:` entry, from arguments, or from both.
 
     The agent's `type` picks the class that runs it (`AGENT_TYPES`), its tools are imported and its
-    prompt directory is located while it is built, and a RAG agent's vector db, text db and embeddings
-    caller are wired up — one that can't be built is warned about and left unwired rather than failing
+    prompt directory is located while it is built, and the vector db, text db and embeddings caller it
+    names are wired up — one that can't be built is warned about and left unwired rather than failing
     the build, since `RAGBuilderAgent` falls back to the context it is called with.
 
     Args:
@@ -443,7 +449,11 @@ def build_agent(
         llm: The caller backing this agent — a name from `llms:`, or an already-built `BaseLLM` to use
             as it is. Defaults to whatever the configured entry names.
         substitute_llm: Caller to fall back to when the primary one raises, in the same two forms.
-        embeddings: Name from `embeddings:` a RAG agent embeds its question with.
+        embeddings: Name from `embeddings:` a RAG agent embeds its question with. Defaults to the
+            agent's own `embedding:`.
+        db_vector_connector, db_text_connector, embeddings_connector: Already-connected objects to hand
+            the agent, instead of building what the config names. This is how several agents share one
+            connection to the same db.
         labels: The labels a classifier agent is allowed to answer with.
         provider, model_name, api_key, temperature, max_tokens, settings: Passed to `build_llm` when the
             caller is built here rather than handed in, and override the configured `llms:` entry.
@@ -491,18 +501,24 @@ def build_agent(
     if fallback and not hasattr(fallback, "_call"):
         fallback = optional(build_llm, f"substitute llm {fallback!r}", name=fallback, configs=configs)
 
+    # Retrieval: an already-connected connector is used as it is, otherwise the configured name is built
+    # here. Passing one in is how a run that builds several agents connects to a db once and shares it,
+    # rather than opening the same index per agent — and an embedded engine like Chroma or FAISS is a
+    # directory one process holds, so opening it repeatedly is not free.
     kwargs: dict[str, Any] = {}
-    if agent_class.__name__ == "RAGBuilderAgent":  # retrieval is this type's whole job, so wire its dbs up
-        for keyword, build, configured_name, label in (
-            ("db_vector_connector", build_vector_db, agent_config.db_vector, "vector db"),
-            ("db_text_connector", build_text_db, agent_config.db_text, "text db"),
-            ("embeddings_connector", build_embeddings, embeddings, "embeddings"),
-        ):
-            kwargs[keyword] = (
-                optional(build, f"{label} {configured_name!r}", name=configured_name, configs=configs)
-                if configured_name
-                else None
+    for keyword, connector, build, configured_name, label in (
+        ("db_vector_connector", db_vector_connector, build_vector_db, agent_config.db_vector, "vector db"),
+        ("db_text_connector", db_text_connector, build_text_db, agent_config.db_text, "text db"),
+        ("embeddings_connector", embeddings_connector, build_embeddings,
+         embeddings or agent_config.embedding, "embeddings"),
+    ):
+        if connector is not None:
+            kwargs[keyword] = connector
+        elif configured_name:
+            kwargs[keyword] = optional(
+                build, f"{label} {configured_name!r}", name=configured_name, configs=configs
             )
+
     if labels and agent_class.__name__ == "ClassifierAgent":
         kwargs["labels"] = list(labels)
     elif labels:
