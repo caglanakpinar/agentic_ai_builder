@@ -4,8 +4,8 @@ from typing import Any
 from builder.prompts import BasePrompt
 from builder.tools import ToolBox
 from models.llms import BaseLLM, ToolCall, ToolFailure
-from uilts.configs import AgentConfigs
-from uilts.logger import logger
+from utils.configs import AgentConfigs
+from utils.logger import logger
 from db_connector.vector import BaseVectorDB
 from db_connector.text import BaseTextDB
 from models.embeddings import BaseEmbeddings
@@ -298,17 +298,25 @@ applies, ignore what does not, and never report a number from them as something 
 
     def retrieve(self, question: str, top_k: int = 5) -> str:
         """Return the documents the knowledge base holds for `question`, joined into one block."""
-        missing = [
-            label for label, connector in (
-                ("embeddings", self.embeddings_connector),
-                ("vector db", self.db_vector_connector),
-                ("text db", self.db_text_connector),
-            ) if not connector
-        ]
+        # A part that is configured but absent did not connect — a key that isn't set, a db that isn't
+        # reachable — and telling someone to configure what they already configured sends them to the
+        # wrong file. So the two cases are reported as the different problems they are.
+        missing = []
+        for label, field, connector in (
+            ("embedding", self.agent_config.embedding, self.embeddings_connector),
+            ("db_vector", self.agent_config.db_vector, self.db_vector_connector),
+            ("db_text", self.agent_config.db_text, self.db_text_connector),
+        ):
+            if connector:
+                continue
+            missing.append(
+                f"`{label}: {field}` did not connect" if field else f"no `{label}` configured"
+            )
+
         if missing:
             logger.warning(
-                f"RAGBuilder {self.name} has no {', '.join(missing)}; answering from the given context "
-                "alone. Configure `embedding`, `db_vector` and `db_text` for this agent to retrieve."
+                f"RAGBuilder {self.name} cannot retrieve ({'; '.join(missing)}); answering from the "
+                "given context alone."
             )
             return ''
 

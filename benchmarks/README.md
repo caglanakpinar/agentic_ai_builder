@@ -336,7 +336,10 @@ dataset's real shape, balance, defects and measured feature strengths filled in.
 
 - **Model ids and keys** — `agentic_configurations.yaml` runs the generators on `claude/claude-sonnet-5`
   and the judger on `claude/claude-opus-5`, both keyed by the `CLAUDE` environment variable; the
-  embeddings are `google/gemini-embedding-001`, keyed by `GEMINI`. Change the `model:` and `api_key:`
+  embeddings are `local/hashing-3072`, computed in-process and keyed by nothing — so `CLAUDE` is the
+  only variable a live run needs. (Anthropic has no embeddings endpoint, so a Claude key cannot serve
+  retrieval; `openai/text-embedding-3-small` or `google/gemini-embedding-001` are the trained
+  alternatives, each needing its own key and a matching `dimension:`.) Change the `model:` and `api_key:`
   lines to run it on anything else; nothing else in the benchmark changes.
 - **Keys in a dry run** — a key the config names but your shell doesn't hold is stood in for, since
   nothing is called, and the substitution is printed. `--live` never does that: it stops immediately and

@@ -75,7 +75,7 @@ packages = [
     { include = "builder" },
     { include = "db_connector" },
     { include = "models" },
-    { include = "uilts" },
+    { include = "utils" },
 ]
 
 [build-system]

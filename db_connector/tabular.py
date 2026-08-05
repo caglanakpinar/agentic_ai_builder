@@ -1,8 +1,8 @@
 from abc import abstractmethod
 from typing import Any
 
-from uilts.configs import SQLDBConfigs, resolve_secret
-from uilts.logger import logger
+from utils.configs import SQLDBConfigs, resolve_secret
+from utils.logger import logger
 
 
 class BaseSQLDB(SQLDBConfigs):
@@ -94,8 +94,9 @@ class BaseSQLDB(SQLDBConfigs):
             rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
             logger.info(f"{self.name} returned {len(rows)} rows.")
             return rows
-        finally:
+        except Exception as e:
             cursor.close()
+            raise e
 
     def execute(self, sql: str, params: tuple | dict | None = None) -> int:
         """Run a write statement, commit it, and return the affected row count."""
@@ -105,8 +106,9 @@ class BaseSQLDB(SQLDBConfigs):
             self.connection.commit()
             logger.info(f"{self.name} affected {cursor.rowcount} rows.")
             return cursor.rowcount
-        finally:
+        except Exception as e:
             cursor.close()
+            raise e
 
     def close(self) -> None:
         """Close the underlying connection."""

@@ -17,130 +17,42 @@ engine gets tried out before any config is written for it.
 Anything a builder cannot build from is raised as `ValueError`, and a driver that isn't installed as
 `ImportError`, so a caller can handle bad config without depending on the CLI.
 
-Provider SDKs and db drivers are imported lazily, inside the builder that needs one: the registries below
-hold dotted paths rather than classes, so importing this module pulls in no provider and no driver.
+Provider SDKs and db drivers are imported lazily, inside the builder that needs one: the registries hold
+dotted paths rather than classes, so importing this module pulls in no provider and no driver. Those
+registries are `utils/default_config.yaml`, read by `Configs` — which is where a new provider, db engine
+or agent type is registered, rather than here.
 """
 
-import importlib
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from uilts.configs import (
-    AgentConfigs,
-    Configs,
-    SQLDBConfigs,
-    TextDBConfigs,
-    VectorDBConfigs,
-)
-from uilts.logger import logger
+from utils.configs import AgentConfigs, Configs, load_class
+from utils.logger import logger
 
 
 # Registries: the name written in the YAML (or passed as `provider`/`db`) -> the class implementing it.
-# Values are dotted paths rather than classes so nothing is imported until a builder resolves one.
-LLM_CALLERS: dict[str, str] = {
-    "claude": "models.llms.ClaudeLLM",
-    "anthropic": "models.llms.ClaudeLLM",
-    "openai": "models.llms.OpenAILLM",
-    "google": "models.llms.GoogleLLM",
-    "gemini": "models.llms.GoogleLLM",
-    "grok": "models.llms.GrokLLM",
-    "xai": "models.llms.GrokLLM",
-    "ollama": "models.llms.OllamaLLM",
-    "mistral": "models.llms.MistralLLM",
-    "huggingface": "models.llms.HuggingFaceInferenceLLM",
-    "hf": "models.llms.HuggingFaceInferenceLLM",
-}
-
-EMBEDDINGS: dict[str, str] = {
-    "openai": "models.embeddings.OpenAIEmbeddings",
-    "google": "models.embeddings.GoogleEmbeddings",
-    "gemini": "models.embeddings.GoogleEmbeddings",
-    "huggingface": "models.embeddings.HuggingFaceEmbeddings",
-    "hf": "models.embeddings.HuggingFaceEmbeddings",
-    "mistral": "models.embeddings.MistralEmbeddings",
-    "ollama": "models.embeddings.OllamaEmbeddings",
-}
-
-VECTOR_DBS: dict[str, str] = {
-    "faiss": "db_connector.vector.FAISSDB",
-    "chroma": "db_connector.vector.ChromaDB",
-    "chromadb": "db_connector.vector.ChromaDB",  # the driver's own name, which is what configs tend to say
-    "qdrant": "db_connector.vector.QdrantDB",
-    "pinecone": "db_connector.vector.PineconeDB",
-    "weaviate": "db_connector.vector.WeaviateDB",
-    "milvus": "db_connector.vector.MilvusDB",
-    "lancedb": "db_connector.vector.LanceDB",
-}
-
-TEXT_DBS: dict[str, str] = {
-    "chroma": "db_connector.text.ChromaTextDB",
-    "chromadb": "db_connector.text.ChromaTextDB",
-    "elasticsearch": "db_connector.text.ElasticsearchTextDB",
-    "opensearch": "db_connector.text.OpenSearchTextDB",
-    "meilisearch": "db_connector.text.MeilisearchTextDB",
-    "typesense": "db_connector.text.TypesenseTextDB",
-}
-
-SQL_DBS: dict[str, str] = {
-    "postgresql": "db_connector.tabular.PostgreSQLDB",
-    "postgres": "db_connector.tabular.PostgreSQLDB",
-    "mysql": "db_connector.tabular.MySQLDB",
-    "sqlite": "db_connector.tabular.SQLiteDB",
-    "duckdb": "db_connector.tabular.DuckDBDB",
-    "snowflake": "db_connector.tabular.SnowflakeDB",
-    "redshift": "db_connector.tabular.RedshiftDB",
-    "bigquery": "db_connector.tabular.BigQueryDB",
-}
-
-AGENT_TYPES: dict[str, str] = {  # `agents.<name>.type` in the YAML -> the class that runs that role
-    "generator": "builder.agents.WorkerAgent",
-    "worker": "builder.agents.WorkerAgent",
-    "judger": "builder.agents.JudgerAgent",
-    "classifier": "builder.agents.ClassifierAgent",
-    "planner": "builder.agents.PlannerAgent",
-    "thinker": "builder.agents.PlannerAgent",
-    "rag": "builder.agents.RAGBuilderAgent",
-    "rag_builder": "builder.agents.RAGBuilderAgent",
-    "retriever": "builder.agents.RAGBuilderAgent",
-}
+# They are data rather than literals — `utils/default_config.yaml` holds them and `Configs` reads it — so
+# a provider, a db engine or an agent type is added by editing that file. The values are dotted paths,
+# imported only when a builder resolves one, which is what keeps importing this module free of provider
+# SDKs and db drivers.
+LLM_CALLERS: dict[str, str] = Configs.registry("llm_callers")
+EMBEDDINGS: dict[str, str] = Configs.registry("embeddings_callers")
+VECTOR_DBS: dict[str, str] = Configs.registry("vector_dbs")
+TEXT_DBS: dict[str, str] = Configs.registry("text_dbs")
+SQL_DBS: dict[str, str] = Configs.registry("sql_dbs")
+AGENT_TYPES: dict[str, str] = Configs.registry("agent_types")
+PROVIDER_HINTS: dict[str, str] = Configs.registry("provider_hints")
 
 # db category -> the engines it can be connected with, and the configs whose fields that connector takes.
-DB_CONNECTORS: dict[str, tuple[dict[str, str], type]] = {
-    "vector": (VECTOR_DBS, VectorDBConfigs),
-    "text": (TEXT_DBS, TextDBConfigs),
-    "sql": (SQL_DBS, SQLDBConfigs),
-}
+DB_CONNECTORS: dict[str, tuple[dict[str, str], type]] = Configs.db_connectors()
 
-PROVIDER_HINTS: dict[str, str] = {  # substring of a model id -> the provider that serves it
-    "claude": "claude",
-    "anthropic": "claude",
-    "gpt": "openai",
-    "text-embedding": "openai",
-    "gemini": "google",
-    "bison": "google",
-    "gecko": "google",
-    "vertexai": "google",
-    "grok": "grok",
-    "mixtral": "mistral",
-    "mistral": "mistral",
-    "ollama": "ollama",
-    "llama": "huggingface",
-}
+DEFAULT_MAX_TOKENS: int = Configs.setting("max_tokens")
 
-DEFAULT_MAX_TOKENS = 1024  # BaseLLM has no default of its own, and every provider requires the field
-
-
-def load_class(path: str) -> type:
-    """Import the class a dotted registry path names, e.g. `"models.llms.ClaudeLLM"`."""
-    module_path, class_name = path.rsplit(".", 1)
-    try:
-        return getattr(importlib.import_module(module_path), class_name)
-    except ImportError as error:  # the driver or SDK the class needs isn't installed
-        raise ImportError(
-            f"cannot import {path}: {error}. Install the extra that provides it, "
-            f'e.g. `poetry install --extras "chroma"`.'
-        ) from error
+# Default for the connector arguments, so "not passed" and "passed nothing" stay different things. A
+# caller that already tried to connect and failed passes `None` to say so, and gets an agent without
+# that connector rather than a second attempt at the same failure — reported twice.
+NOT_GIVEN: Any = object()
 
 
 def resolve(registry: dict[str, str], key: str, label: str) -> type:
@@ -423,9 +335,9 @@ def build_agent(
     llm: Any = None,
     substitute_llm: Any = None,
     embeddings: str | None = None,
-    db_vector_connector: Any = None,
-    db_text_connector: Any = None,
-    embeddings_connector: Any = None,
+    db_vector_connector: Any = NOT_GIVEN,
+    db_text_connector: Any = NOT_GIVEN,
+    embeddings_connector: Any = NOT_GIVEN,
     labels: Sequence[str] = (),
     provider: str | None = None,
     model_name: str | None = None,
@@ -453,7 +365,8 @@ def build_agent(
             agent's own `embedding:`.
         db_vector_connector, db_text_connector, embeddings_connector: Already-connected objects to hand
             the agent, instead of building what the config names. This is how several agents share one
-            connection to the same db.
+            connection to the same db. Passing `None` means "this agent runs without one" — what a
+            caller that already tried and failed says, so the failure is not repeated here.
         labels: The labels a classifier agent is allowed to answer with.
         provider, model_name, api_key, temperature, max_tokens, settings: Passed to `build_llm` when the
             caller is built here rather than handed in, and override the configured `llms:` entry.
@@ -512,7 +425,7 @@ def build_agent(
         ("embeddings_connector", embeddings_connector, build_embeddings,
          embeddings or agent_config.embedding, "embeddings"),
     ):
-        if connector is not None:
+        if connector is not NOT_GIVEN:
             kwargs[keyword] = connector
         elif configured_name:
             kwargs[keyword] = optional(

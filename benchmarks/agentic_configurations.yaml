@@ -8,12 +8,24 @@
 #   python benchmarks/dataset.py          # write the dataset
 #   python benchmarks/knowledge.py        # fill the knowledge base the first agent retrieves from
 #   python benchmarks/run_benchmark.py    # build the workflow, render its prompts, run the tool chain
-#   python benchmarks/run_benchmark.py --live   # ...and call the models (needs GEMINI / CLAUDE set)
+#   python benchmarks/run_benchmark.py --live   # ...and call the models (needs GEMINI set)
 
-# No `temperature:` on any of these on purpose. Claude Opus 5 and Opus 4.8/4.7 reject the parameter
-# outright, and Sonnet 5 accepts only its own default — so a temperature here is a 400, not a tuning
-# knob. Leave it unset and the request goes out without it. Models that still take one (Sonnet 4.6,
-# Opus 4.6, Haiku 4.5, Gemini, GPT) can set it as normal.
+# The whole pipeline runs on Gemini 3.5 Flash-Lite: the fastest, cheapest model in the 3.5 family, aimed
+# at high-throughput subagent work. Every caller below is the same model, so nothing here is a stronger
+# reviewer than the work it reviews — a judge and the agent it judges reason with identical capacity.
+#
+# Tool use works: `GoogleLLM` speaks the Gemini tool dialect (`function_call` parts out,
+# `function_response` parts back), so the six tool-using agents below actually run their tools and the
+# gates measure what the agents produced rather than falling back to the runner's reference chain.
+#
+# ⚠ Thinking level: this model defaults to `thinking_level: minimal` for throughput, and Google's own
+# guidance is to raise it to `medium` or `high` for subagents that call tools, because minimal thinking
+# ends a tool sequence early. That is the failure to watch for here — an agent that calls one tool and
+# writes its report instead of finishing the chain. There is no YAML surface for it yet: it is a
+# provider-specific setting, passed as `build_llm(settings={"thinking_config": {"thinking_level": "medium"}})`.
+#
+# `temperature:` is still unset. Gemini takes one normally, unlike the Claude models this config used to
+# run, but leaving it out keeps a run comparable against the earlier ones and against a rerun of itself.
 #
 # `max_tokens` is deliberately generous. These models think by default, and thinking tokens are billed
 # against the same ceiling as the answer — a judge given 2048 spent 1931 of them thinking and had its
@@ -21,32 +33,32 @@
 # keeps a non-streaming request under the SDK's HTTP timeout; going much higher needs streaming.)
 llms:
   rag_llm:
-    model: "claude/claude-sonnet-5"
-    api_key: CLAUDE  # the env var holding the key, or paste the key here directly
+    model: "gemini/gemini-3.1-flash-lite"
+    api_key: GEMINI  # the env var holding the key, or paste the key here directly
     max_tokens: 16000
     type: "generator"
 
   generator_llm_1:  # the workhorse behind the specialists
-    model: "claude/claude-sonnet-5"
-    api_key: CLAUDE
+    model: "gemini/gemini-3.1-flash-lite"
+    api_key: GEMINI
     max_tokens: 16000
     type: "generator"
 
   generator_llm_2:  # for the short structured answers — still needs room to think first
-    model: "claude/claude-sonnet-5"
-    api_key: CLAUDE
+    model: "gemini/gemini-3.1-flash-lite"
+    api_key: GEMINI
     max_tokens: 8000
     type: "generator"
 
   generator_llm_thinker:  # every agent's fallback when its primary call fails
-    model: "claude/claude-sonnet-5"
-    api_key: CLAUDE
+    model: "gemini/gemini-3.1-flash-lite"
+    api_key: GEMINI
     max_tokens: 16000
     type: "generator"
 
-  judger_agent_1:  # the review comes from a stronger model than the work it is reviewing
-    model: "claude/claude-opus-5"
-    api_key: CLAUDE
+  judger_agent_1:  # the review, on the same model as the work — see the note above
+    model: "gemini/gemini-3.1-flash-lite"
+    api_key: GEMINI
     max_tokens: 16000
     type: "judger"
 
@@ -70,6 +82,20 @@ dbs:
 
 embeddings:
   rag_embeddings:
+    # Gemini's embedding model, not Flash-Lite: a generative model has no embeddings endpoint, so
+    # `gemini-3.5-flash-lite` cannot turn a question into a vector. 3072 wide, matching
+    # `ds_knowledge_db.dimension` above.
+    #
+    # ⚠ Rebuild the index after changing this — `python benchmarks/knowledge.py`. Vectors from a
+    # different model share the width but not the space, so an index left over from the previous model
+    # still loads, still returns 14 matches, and every one of them is noise. Nothing catches that.
+    #
+    # Alternatives, each needing its own key and a matching `dimension:`:
+    #
+    #   model: "local/hashing-3072"              # no key, no network; matches wording, not meaning
+    #   model: "openai/text-embedding-3-small"   api_key: OPENAI   # then dimension: 1536
+    #
+    # There is no Claude option: the Anthropic API has no embeddings endpoint at all.
     model: "google/gemini-embedding-001"
     api_key: GEMINI
 

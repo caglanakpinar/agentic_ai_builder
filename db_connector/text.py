@@ -1,11 +1,12 @@
 from abc import abstractmethod
 from typing import Any
 
-from uilts.configs import TextDBConfigs, resolve_secret
-from uilts.logger import logger
+from utils.configs import Configs, TextDBConfigs, resolve_secret
+from utils.logger import logger
 
 
-DOCUMENT_FIELD = "document"  # field every connector stores a record's text under
+# Field every connector stores a record's text under. From `defaults:` in `utils/default_config.yaml`.
+DOCUMENT_FIELD: str = Configs.setting("document_field")
 
 
 class BaseTextDB(TextDBConfigs):

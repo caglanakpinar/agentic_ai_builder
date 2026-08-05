@@ -43,7 +43,7 @@ from builder.factory import (
     build_vector_db,
     load_configs,
 )
-from uilts.configs import (
+from utils.configs import (
     AgentConfigs,
     Configs,
     EmbeddingsConfigs,
@@ -54,7 +54,7 @@ from uilts.configs import (
     ToolConfigs,
     VectorDBConfigs,
 )
-from uilts.logger import get_logger, logger
+from utils.logger import get_logger, logger
 
 __version__ = "0.1.0"
 

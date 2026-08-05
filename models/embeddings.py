@@ -1,5 +1,9 @@
 
+import hashlib
+import math
+import re
 from abc import abstractmethod
+from collections import Counter
 from typing import Any
 
 from openai import OpenAI
@@ -8,8 +12,8 @@ from huggingface_hub import InferenceClient
 from google import genai
 from google.genai import types as genai_types
 
-from uilts.configs import EmbeddingsConfigs, resolve_secret
-from uilts.logger import logger
+from utils.configs import EmbeddingsConfigs, resolve_secret
+from utils.logger import logger
 
 
 class BaseEmbeddings(EmbeddingsConfigs):
@@ -62,6 +66,79 @@ class BaseEmbeddings(EmbeddingsConfigs):
     def embed_texts(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
         """Embed several texts, one call each — how a knowledge base is written in the first place."""
         return [self._call(text, **kwargs) for text in texts]
+
+
+class LocalEmbeddings(BaseEmbeddings):
+    """Embeddings computed in-process — hashed bag of words. No provider, no key, no download.
+
+    Every other caller here is a client for someone's API. This one is the vector itself: the text is
+    tokenised into words and word pairs, each is hashed to a coordinate and a sign, weighted by log term
+    frequency, and the result is L2-normalised. The cosine similarity between two of these is a weighted
+    term-overlap score — the hashing trick, which is how a TF-IDF retriever works at a fixed width with
+    no vocabulary to fit.
+
+    It is not a trained model and does not pretend to be one: it matches documents that share wording,
+    not documents that share meaning, so a paraphrase with nothing in common lexically scores zero. Over
+    a small curated knowledge base whose questions use the vocabulary the notes use, that is usually
+    enough — and it is what makes a retrieval pipeline runnable offline, in CI, and before any key
+    exists. Move to a trained model (`openai/text-embedding-3-small`, `google/gemini-embedding-001`,
+    a local `ollama/...`) when meaning has to be matched rather than words.
+
+    Hashing is `blake2b` rather than the built-in `hash`, which is salted per process: the same text
+    must give the same vector on the next run, or an index written today cannot be searched tomorrow.
+
+    The width comes from the model id — `local/hashing-1024` is 1024-wide — or from `dimensions`,
+    defaulting to 512. It has to match the `dimension` of the vector db these are written into.
+    """
+
+    dimensions: int | None = None  # width of the vector; also settable as a `-<width>` suffix on the id
+    arguments: list[str] = [
+        'dimensions',
+    ]
+
+    WORDS = re.compile(r"[a-z0-9]+")
+    DEFAULT_WIDTH = 512
+
+    def api_key_checker(self) -> None:
+        """No credential to resolve: nothing leaves the process, so a configured key is simply unused."""
+        self.api_key = ''
+
+    def _initialize_model(self, **kwargs: Any) -> None:
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+
+        self.dimensions = int(self.dimensions or self.width_from(self.model_name) or self.DEFAULT_WIDTH)
+        self.model_client = None  # there is no client; `_call` below is the whole model
+        logger.info(
+            f"Local embeddings ready: {self.dimensions}-wide hashed bag of words, nothing is called."
+        )
+
+    @staticmethod
+    def width_from(model_name: str) -> int | None:
+        """Read the width off the model id, so `hashing-3072` is 3072-wide."""
+        tail = str(model_name).rsplit("-", 1)[-1]
+        return int(tail) if tail.isdigit() else None
+
+    def tokens(self, text: str) -> list[str]:
+        """Words plus adjacent word pairs — the pairs are what keep 'not imbalanced' from matching 'imbalanced'."""
+        words = self.WORDS.findall(text.lower())
+        return words + [f"{first}_{second}" for first, second in zip(words, words[1:])]
+
+    def _call(self, text: str, **kwargs: Any) -> list[float]:
+        width = int(kwargs.get("dimensions") or self.dimensions)
+        vector = [0.0] * width
+
+        for token, count in Counter(self.tokens(text)).items():
+            digest = hashlib.blake2b(token.encode(), digest_size=8).digest()
+            index = int.from_bytes(digest[:4], "big") % width
+            # A sign per token, so two different tokens landing on one coordinate cancel as often as
+            # they add, instead of every collision inflating the similarity.
+            sign = 1.0 if digest[4] & 1 else -1.0
+            vector[index] += sign * (1.0 + math.log(count))
+
+        length = math.sqrt(sum(value * value for value in vector))
+        return [value / length for value in vector] if length else vector
 
 
 class OpenAIEmbeddings(BaseEmbeddings):

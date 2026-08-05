@@ -1,12 +1,38 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+import importlib
 import os
 import re
 import yaml
 
 
 ENV_VAR_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")  # what a configured environment variable name looks like
+
+# The registries and defaults shipped with the package — which provider, engine and agent-type names
+# exist, and what class each one is built from. Read once here rather than per `Configs`: it is package
+# data, and it does not change under a running process.
+DEFAULT_CONFIG_PATH = Path(__file__).parent / "default_config.yaml"
+
+
+def read_default_configs() -> dict[str, Any]:
+    """Read `default_config.yaml`, the defaults every builder resolves against."""
+    if not DEFAULT_CONFIG_PATH.exists():
+        raise FileNotFoundError(f"the package default config is missing from {DEFAULT_CONFIG_PATH}.")
+
+    return yaml.safe_load(DEFAULT_CONFIG_PATH.read_text()) or {}
+
+
+def load_class(path: str) -> type:
+    """Import the class a dotted registry path names, e.g. `"models.llms.ClaudeLLM"`."""
+    module_path, class_name = path.rsplit(".", 1)
+    try:
+        return getattr(importlib.import_module(module_path), class_name)
+    except ImportError as error:  # the driver or SDK the class needs isn't installed
+        raise ImportError(
+            f"cannot import {path}: {error}. Install the extra that provides it, "
+            f'e.g. `poetry install --extras "chroma"`.'
+        ) from error
 
 
 def resolve_secret(value: str | None, owner: str, field: str = "api_key", required: bool = True) -> str | None:
@@ -153,20 +179,44 @@ class PipelineConfigs:
     config: dict[str, str] | None = None
 
 
-# db category -> the configs it is parsed into. `type` names the category, `db` the engine within it.
-DB_CONFIGS = {
-    "vector": VectorDBConfigs,
-    "sql": SQLDBConfigs,
-    "text": TextDBConfigs,
-}
-
-
 class Configs:
+    # The package defaults, on the class so a builder can read a registry without a config directory —
+    # `builder.factory` resolves against these while it is being imported. An instance carries the same
+    # blocks as attributes, overlaid with anything a pipeline's own YAML redefines (see `read_yaml`);
+    # these three accessors read the shipped defaults rather than one pipeline's view of them.
+    default_configs: dict[str, Any] = read_default_configs()
+
     db_confgs: dict[str, VectorDBConfigs | SQLDBConfigs | TextDBConfigs] = {}
     llm_configs: dict[str, LLMConfigs] = {}
     embeddings_configs: dict[str, EmbeddingsConfigs] = {}
     agent_configs: dict[str, AgentConfigs] = {}
     tool_configs: dict[str, ToolConfigs] = {}
+
+    @classmethod
+    def registry(cls, name: str) -> dict[str, str]:
+        """One `name -> dotted path` block of the default config, e.g. `registry("llm_callers")`."""
+        block = cls.default_configs.get(name)
+        if not isinstance(block, dict):
+            raise KeyError(f"{name!r} is not a registry in {DEFAULT_CONFIG_PATH.name}.")
+
+        return dict(block)
+
+    @classmethod
+    def setting(cls, name: str, default: Any = None) -> Any:
+        """One value from the `defaults:` block, e.g. `setting("max_tokens")`."""
+        return (cls.default_configs.get("defaults") or {}).get(name, default)
+
+    @classmethod
+    def db_connectors(cls) -> dict[str, tuple[dict[str, str], type]]:
+        """Each db category -> the engines it can use, and the configs class its entries are parsed into.
+
+        The configs classes are resolved on call rather than at import, because they are defined in this
+        module: importing them by path while it is still executing would be a partial import of itself.
+        """
+        return {
+            category: (cls.registry(entry["engines"]), load_class(entry["configs"]))
+            for category, entry in (cls.default_configs.get("db_categories") or {}).items()
+        }
 
     def __init__(self, current_filename: str):
         self.current_dir = self.resolve_dir(current_filename)
@@ -192,6 +242,14 @@ class Configs:
         return Path(__file__).parent / current_filename
 
     def read_yaml(self):
+        """Lay the pipeline's own YAML over the package defaults, both as attributes on this config.
+
+        The defaults go on first, so a pipeline that redefines a block — its own `agent_types:`, say —
+        replaces the shipped one for this config rather than being merged into it.
+        """
+        for key, value in self.default_configs.items():
+            setattr(self, key, value)
+
         for file in self.current_dir.glob("*.yaml"):
             with open(file, 'r') as f:
                 configs = yaml.safe_load(f) or {}
@@ -214,13 +272,15 @@ class Configs:
             if isinstance(dbs, dict):  # name -> mapping form, where the key carries the db name
                 dbs = [{'name': db_name, **db_cfg} for db_name, db_cfg in dbs.items()]
 
+            categories = self.db_connectors()
             for db_cfg in dbs:
-                configs = DB_CONFIGS.get(db_cfg.get('type'))
-                if not configs:
+                if db_cfg.get('type') not in categories:
                     raise ValueError(
                         f"{db_cfg['name']}: unknown db type {db_cfg.get('type')!r}, "
-                        f"expected one of {sorted(DB_CONFIGS)}."
+                        f"expected one of {sorted(categories)}."
                     )
+
+                _, configs = categories[db_cfg['type']]
                 if not db_cfg.get('db'):
                     raise ValueError(f"{db_cfg['name']}: `db` must name the engine to connect with.")
 

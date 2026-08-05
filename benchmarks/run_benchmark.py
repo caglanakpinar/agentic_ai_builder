@@ -39,8 +39,8 @@ from agent_builder import (
     load_configs,
 )
 from benchmarks import tools
-from uilts.configs import ENV_VAR_NAME
-from uilts.logger import logger
+from utils.configs import ENV_VAR_NAME
+from utils.logger import logger
 
 CONFIG_DIR = Path(__file__).parent
 GENERATED_DIR = CONFIG_DIR / "generated"
@@ -552,6 +552,51 @@ def workflow(configs) -> dict[str, object]:
     }
 
 
+def missing_key(configured, owner: str) -> str:
+    """Name the environment variable a configured secret points at, when it is the thing that is unset."""
+    variable = getattr(configured, "api_key", None)
+    if variable and ENV_VAR_NAME.match(variable) and not os.getenv(variable):
+        return f" — {owner} needs {variable}, which is not set (export {variable}=...)"
+
+    return ''
+
+
+def retrieval_problems(configs, agents: dict[str, object]) -> list[str]:
+    """Say why an agent configured to retrieve is not going to, one line each.
+
+    Failing to retrieve is quiet by design: the agent answers from the context it was given and the run
+    finishes normally, so a live run that was meant to retrieve and didn't looks like a run that worked.
+    That is worth a line of its own — naming the part that did not connect and, when a key is what is
+    missing, the variable to export, since `--live` never stands in for one.
+    """
+    problems = []
+    for name, agent in agents.items():
+        config = configs.agent_configs[name]
+        declared = (
+            ("embedding", config.embedding, "embeddings_connector", configs.embeddings_configs),
+            ("db_vector", config.db_vector, "db_vector_connector", configs.db_confgs),
+            ("db_text", config.db_text, "db_text_connector", configs.db_confgs),
+        )
+        if not any(configured_name for _, configured_name, _, _ in declared):
+            continue  # this agent was never meant to retrieve
+        if getattr(agent, "retrieves", lambda: False)():
+            continue
+
+        for field, configured_name, attribute, registry in declared:
+            if getattr(agent, attribute, None):
+                continue
+            if not configured_name:
+                problems.append(f"  {name}: no `{field}` configured, so it cannot retrieve.")
+                continue
+
+            problems.append(
+                f"  {name}: `{field}: {configured_name}` did not connect"
+                f"{missing_key(registry.get(configured_name), configured_name) or '; see the warning above'}."
+            )
+
+    return problems
+
+
 def retrieval_report(agent: object) -> str:
     """One line saying what an agent retrieves through, and whether there is anything there to find."""
     if not any((
@@ -777,6 +822,11 @@ def run(arguments) -> None:
         if retrieval:
             lines.append(retrieval)
         print("\n".join(lines))
+
+    problems = retrieval_problems(configs, agents)
+    if problems:
+        print("\n  Retrieval is off — these agents will answer from the dataset profile alone:")
+        print("\n".join(problems))
 
     gates = gate_report(configs, measured.get("measurements") or {}) if measured else []
     if gates:
