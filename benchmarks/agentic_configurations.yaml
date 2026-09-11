@@ -10,57 +10,81 @@
 #   python benchmarks/run_benchmark.py    # build the workflow, render its prompts, run the tool chain
 #   python benchmarks/run_benchmark.py --live   # ...and call the models (needs GEMINI set)
 
-# The whole pipeline runs on Gemini 3.5 Flash-Lite: the fastest, cheapest model in the 3.5 family, aimed
-# at high-throughput subagent work. Every caller below is the same model, so nothing here is a stronger
-# reviewer than the work it reviews — a judge and the agent it judges reason with identical capacity.
+# The whole pipeline runs on Qwen/Qwen3.8-2.4T-A95B, open-weights, served through the Hugging Face
+# router. Every caller below is the same model, so nothing here is a stronger reviewer than the work it
+# reviews — a judge and the agent it judges reason with identical capacity. This is the open-source arm
+# of the comparison against the gemini-3.1-flash-lite run in `benchmarks/generated/`.
 #
-# Tool use works: `GoogleLLM` speaks the Gemini tool dialect (`function_call` parts out,
-# `function_response` parts back), so the six tool-using agents below actually run their tools and the
-# gates measure what the agents produced rather than falling back to the runner's reference chain.
+# ⚠ Provider routing: this model is served by `together` and `fireworks-ai`, not by the `featherless-ai`
+# that `HuggingFaceInferenceLLM` used to pin, so the caller now defaults to the router's `auto` and lets
+# it pick a live provider. Check which one answered in the run log before reading a latency number.
 #
-# ⚠ Thinking level: this model defaults to `thinking_level: minimal` for throughput, and Google's own
-# guidance is to raise it to `medium` or `high` for subagents that call tools, because minimal thinking
-# ends a tool sequence early. That is the failure to watch for here — an agent that calls one tool and
-# writes its report instead of finishing the chain. There is no YAML surface for it yet: it is a
-# provider-specific setting, passed as `build_llm(settings={"thinking_config": {"thinking_level": "medium"}})`.
+# ⚠ Tool use is the thing to watch. The six tool-using agents below need the OpenAI tool dialect, which
+# `HuggingFaceInferenceLLM` speaks (`OpenAIToolDialect`) — but whether tool calls actually come back
+# depends on the serving provider honouring `tools`, not only on the model. An agent that reports without
+# calling anything is the failure mode: the gates then measure the runner's reference chain rather than
+# what the agent produced, and the comparison against the Gemini run stops being like-for-like.
 #
-# `temperature:` is still unset. Gemini takes one normally, unlike the Claude models this config used to
-# run, but leaving it out keeps a run comparable against the earlier ones and against a rerun of itself.
+# `temperature:` is left unset, as it was for the Gemini run, so the two are comparable.
 #
-# `max_tokens` is deliberately generous. These models think by default, and thinking tokens are billed
-# against the same ceiling as the answer — a judge given 2048 spent 1931 of them thinking and had its
-# verdict cut off mid-table. Size for the reasoning plus the answer, not the answer alone. (16k also
-# keeps a non-streaming request under the SDK's HTTP timeout; going much higher needs streaming.)
+# `max_tokens` stays at the Gemini run's ceiling for the same reason. Thinking tokens are billed against
+# it, so a judge sized for its answer alone gets cut off mid-verdict.
+
 llms:
   rag_llm:
-    model: "gemini/gemini-3.1-flash-lite"
-    api_key: GEMINI  # the env var holding the key, or paste the key here directly
+    model: "huggingface/Qwen/Qwen3.8-27B"
+    api_key: HF_KEY  # the env var holding the key, or paste the key here directly
     max_tokens: 16000
     type: "generator"
+    settings:
+      # The router's `auto` follows the account's provider preference order, not the list of
+      # providers that actually serve this model — so it can pick one that has never hosted it and
+      # answer 403. Pin one the model is live on: "together" or "fireworks-ai".
+      provider: "together"
 
   generator_llm_1:  # the workhorse behind the specialists
-    model: "gemini/gemini-3.1-flash-lite"
-    api_key: GEMINI
+    model: "huggingface/Qwen/Qwen3.8-27B"
+    api_key: HF_KEY
     max_tokens: 16000
     type: "generator"
+    settings:
+      # The router's `auto` follows the account's provider preference order, not the list of
+      # providers that actually serve this model — so it can pick one that has never hosted it and
+      # answer 403. Pin one the model is live on: "together" or "fireworks-ai".
+      provider: "together"
 
   generator_llm_2:  # for the short structured answers — still needs room to think first
-    model: "gemini/gemini-3.1-flash-lite"
-    api_key: GEMINI
+    model: "huggingface/Qwen/Qwen3.8-27B"
+    api_key: HF_KEY
     max_tokens: 8000
     type: "generator"
+    settings:
+      # The router's `auto` follows the account's provider preference order, not the list of
+      # providers that actually serve this model — so it can pick one that has never hosted it and
+      # answer 403. Pin one the model is live on: "together" or "fireworks-ai".
+      provider: "together"
 
   generator_llm_thinker:  # every agent's fallback when its primary call fails
-    model: "gemini/gemini-3.1-flash-lite"
-    api_key: GEMINI
+    model: "huggingface/Qwen/Qwen3.8-27B"
+    api_key: HF_KEY
     max_tokens: 16000
     type: "generator"
+    settings:
+      # The router's `auto` follows the account's provider preference order, not the list of
+      # providers that actually serve this model — so it can pick one that has never hosted it and
+      # answer 403. Pin one the model is live on: "together" or "fireworks-ai".
+      provider: "together"
 
   judger_agent_1:  # the review, on the same model as the work — see the note above
-    model: "gemini/gemini-3.1-flash-lite"
-    api_key: GEMINI
+    model: "huggingface/Qwen/Qwen3.8-27B"
+    api_key: HF_KEY
     max_tokens: 16000
     type: "judger"
+    settings:
+      # The router's `auto` follows the account's provider preference order, not the list of
+      # providers that actually serve this model — so it can pick one that has never hosted it and
+      # answer 403. Pin one the model is live on: "together" or "fireworks-ai".
+      provider: "together"
 
 
 dbs:

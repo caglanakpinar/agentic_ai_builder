@@ -178,7 +178,8 @@ def build_llm(
         model_name: Model id to call, optionally prefixed with `provider/`.
         api_key: The key itself, or the name of the environment variable holding it.
         temperature, max_tokens, type, tools, mcp_servers: The rest of `LLMConfigs`.
-        settings: Provider-specific options (`top_p`, `thinking`, …) passed to the caller's constructor.
+        settings: Provider-specific options (`provider`, `top_p`, `thinking_config`, …) passed to the
+            caller's constructor, overriding the `settings:` of the configured entry.
 
     Returns:
         A `BaseLLM` subclass instance with its SDK client already constructed.
@@ -212,7 +213,8 @@ def build_llm(
         tools=fields.get("tools"),
         type=fields.get("type") or "generator",
         mcp_servers=fields.get("mcp_servers") or None,
-        **(settings or {}),
+        # An argument beats the config, the same way every other field here does.
+        **{**(fields.get("settings") or {}), **(settings or {})},
     )
 
 

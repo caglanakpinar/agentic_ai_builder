@@ -1,8 +1,11 @@
 
 import json
+import random
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib import request
 
@@ -10,8 +13,9 @@ import anthropic
 import torch
 from openai import OpenAI
 from mistralai.client import Mistral
+from peft import PeftConfig, PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-from huggingface_hub import InferenceClient
+from huggingface_hub import InferenceClient, file_exists
 from google import genai
 from google.genai import types as genai_types
 
@@ -168,6 +172,80 @@ class BaseLLM(LLMConfigs):
     def _call(self, prompt: str, **kwargs: Any) -> str:
         """Run one generation call and return plain text."""
 
+    # ---- rate limits -------------------------------------------------------------------------------
+    # A provider's limits move with its live capacity, so a burst that succeeded once is not guaranteed
+    # to succeed again. Backing off and retrying is the documented remedy; without it a single 429
+    # anywhere in a run ends that agent, and falling straight through to a substitute on the same
+    # provider only adds to the burst that caused it.
+    max_retries: int = 5  # attempts per request before the failure is raised to the caller
+    max_backoff: float = 60.0  # seconds; a provider asking for longer than this is worth failing on
+    # Congestion arrives under several status codes from the same provider: 429 for the account's rate,
+    # 503 for its own capacity ("too many requests in flight"), 504 when the request outlived the
+    # gateway. None of them says anything is wrong with the request, so all of them are worth retrying.
+    retry_statuses: tuple[int, ...] = (408, 425, 429, 500, 502, 503, 504)
+
+    @classmethod
+    def transient(cls, error: Exception) -> bool:
+        """Whether a provider refused this request because it was busy, rather than for cause.
+
+        The status code decides it when the SDK exposes one. Otherwise the message is matched against
+        the phrases providers use, kept narrow deliberately: a bare number would match any figure that
+        happens to appear in an unrelated error.
+        """
+        status = getattr(getattr(error, "response", None), "status_code", None)
+        if status is not None:
+            return status in cls.retry_statuses
+
+        message = str(error).lower()
+        return any(marker in message for marker in (
+            "rate_limit",
+            "rate limit",
+            "too many requests",
+            "service unavailable",
+            "gateway time-out",
+            "gateway timeout",
+            "overloaded",
+            "try again later",
+        ))
+
+    def backoff(self, error: Exception, attempt: int) -> float:
+        """How long to wait before retrying — what the provider asked for, else exponential with jitter.
+
+        `Retry-After` and `X-RateLimit-Reset` carry either a number of seconds or an absolute epoch
+        timestamp depending on the provider, so a value far in the future is read as the latter.
+        """
+        headers = getattr(getattr(error, "response", None), "headers", None) or {}
+        for header in ("retry-after", "x-ratelimit-reset"):
+            value = headers.get(header) or headers.get(header.title())
+            try:
+                seconds = float(value)
+            except (TypeError, ValueError):
+                continue
+
+            if seconds > 1e6:  # an epoch timestamp rather than a duration
+                seconds -= time.time()
+            if seconds > 0:
+                return min(seconds, self.max_backoff)
+
+        return min(2.0 ** attempt + random.uniform(0, 1), self.max_backoff)
+
+    def request(self, send: Any, **kwargs: Any) -> Any:
+        """Run one provider request, retrying with back-off while the provider is busy."""
+        for attempt in range(self.max_retries):
+            try:
+                return send(**kwargs)
+            except Exception as error:
+                if not self.transient(error) or attempt == self.max_retries - 1:
+                    raise
+
+                delay = self.backoff(error, attempt)
+                status = getattr(getattr(error, "response", None), "status_code", None)
+                logger.warning(
+                    f"{self.model_name}: provider busy ({status or type(error).__name__}); "
+                    f"retrying in {delay:.1f}s (attempt {attempt + 1}/{self.max_retries})."
+                )
+                time.sleep(delay)
+
     def log_response(self, stop_reason: str | None, usage: Any = None, detail: str = '') -> None:
         """Log one line about a response, and warn when the answer was cut off by `max_tokens`.
 
@@ -279,10 +357,17 @@ class OpenAIToolDialect:
 
 
 class HuggingFaceInferenceLLM(OpenAIToolDialect, BaseLLM):
-    """Free-tier Hugging Face Inference API caller, via `huggingface_hub.InferenceClient` (OpenAI-compatible).
+    """Hugging Face Inference API caller, via `huggingface_hub.InferenceClient` (OpenAI-compatible).
 
-    Extra params: `top_p`, `frequency_penalty`, `presence_penalty`, `stop`, `stream`, `tool_choice`, `seed`.
+    `provider` is which serving provider behind the HF router answers the call. It defaults to "auto",
+    letting the router pick one that actually serves the model: a provider named outright serves only
+    the models it hosts, and asking it for anything else fails as a 404 that reads like the model does
+    not exist. Name one to pin it — "together", "fireworks-ai", "featherless-ai", ….
+
+    Extra params: `provider`, `top_p`, `frequency_penalty`, `presence_penalty`, `stop`, `stream`,
+    `tool_choice`, `seed`.
     """
+    provider: str = "auto"  # serving provider behind the HF router; "auto" lets it choose
     top_p: float = 1.0  # nucleus sampling threshold
     frequency_penalty: float = 0.0  # penalize tokens by how often they've already appeared
     presence_penalty: float = 0.0  # penalize tokens that have appeared at all so far
@@ -304,7 +389,7 @@ class HuggingFaceInferenceLLM(OpenAIToolDialect, BaseLLM):
         for key, value in kwargs.items():
             if hasattr(self, key):
                 setattr(self, key, value)
-        self.model_client = InferenceClient(api_key=self.api_key, provider="featherless-ai")
+        self.model_client = InferenceClient(api_key=self.api_key, provider=self.provider)
 
     def _call(self, prompt: str, **kwargs: Any) -> str:
         call_kwargs: dict[str, Any] = {
@@ -314,14 +399,15 @@ class HuggingFaceInferenceLLM(OpenAIToolDialect, BaseLLM):
             **self.optional_arguments('temperature', 'tools', **kwargs),
         }
 
-        response = self.model_client.chat_completion(**call_kwargs)
+        response = self.request(self.model_client.chat_completion, **call_kwargs)
         self.log_response(
             getattr(response.choices[0], "finish_reason", None), getattr(response, "usage", None)
         )
         return str(response.choices[0].message.content or "").strip()
 
     def converse(self, messages: list[Any], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> Any:
-        response = self.model_client.chat_completion(
+        response = self.request(
+            self.model_client.chat_completion,
             model=self.model_name,
             max_tokens=int(kwargs.pop("max_tokens", self.max_tokens)),
             messages=messages,
@@ -332,6 +418,148 @@ class HuggingFaceInferenceLLM(OpenAIToolDialect, BaseLLM):
         )
         return response
 
+
+class HuggingFaceLocalLLM(BaseLLM):
+    """A Hugging Face Hub repo run in-process with `transformers`, rather than called over the Inference API.
+
+    This is for models no serving provider hosts, like a fine-tune pushed to your own repo
+    (`Caglana/qwen0.5b-tinylora-ds-assistant`). The repo is downloaded once into the HF cache and
+    generation runs locally, so nothing is billed. A key is only needed for a private or gated repo, and
+    without one the token from `huggingface-cli login` is used.
+
+    A repo that carries `adapter_config.json` is a PEFT adapter. It is loaded on top of the base model
+    its config declares, through `PeftModel.from_pretrained`, which is how the adapter's card says to
+    load it. Any other repo is loaded as a full model. `model_name` can also be a local directory.
+
+    With no `temperature` (or 0) decoding is greedy, so the same prompt gets the same answer. That is
+    how the adapter is evaluated. Give a `temperature` to sample instead.
+
+    Extra params: `revision`, `base_model`, `device`, `dtype`, `system`, `top_p`, `top_k`,
+    `repetition_penalty`, `do_sample`, `seed`.
+    """
+    revision: str | None = None  # branch, tag or commit sha of the repo; None is `main`
+    base_model: str | None = None  # base under an adapter; None is what `adapter_config.json` declares
+    device: str = "auto"  # "auto" picks cuda, then mps, then cpu
+    dtype: str = "auto"  # the checkpoint's own dtype; "float32" etc. to override
+    system: str | None = None  # system prompt; None leaves the chat template's default
+    top_p: float | None = None  # nucleus sampling threshold; only applies when sampling
+    top_k: int | None = None  # restrict sampling to the top K candidate tokens; only applies when sampling
+    repetition_penalty: float | None = None  # >1 discourages repeating tokens already generated
+    do_sample: bool | None = None  # None samples exactly when `temperature` is set above 0
+    seed: int | None = None  # deterministic sampling seed
+    arguments: list[str] = [  # names of the generation params above, forwarded to `generate` when set
+        'top_p',
+        'top_k',
+        'repetition_penalty',
+    ]
+
+    # Weights loaded so far, shared by every caller built for the same repo. A pipeline that names one
+    # model for several agents (or as a substitute) would otherwise hold one copy of it per agent.
+    loaded: dict[tuple[Any, ...], tuple[Any, Any, Any]] = {}
+
+    def api_key_checker(self) -> None:
+        """Resolve `api_key` the usual way, except that having none is fine: a public repo needs no token."""
+        try:
+            self.api_key = resolve_secret(self.api_key, self.model_name, required=False) or None
+        except ValueError as error:
+            logger.error(str(error))
+            raise
+
+    def _initialize_model(self, **kwargs: Any) -> None:
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+
+        key = (self.model_name, self.revision, self.base_model, self.device, self.dtype)
+        if key not in self.loaded:
+            self.loaded[key] = self.load()
+        self.model_client, self.tokenizer, self.torch_device = self.loaded[key]
+
+    def resolve_device(self) -> torch.device:
+        if self.device != "auto":
+            return torch.device(self.device)
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+
+    def is_adapter(self) -> bool:
+        """Whether `model_name` holds a PEFT adapter rather than a full model."""
+        local = Path(self.model_name)
+        if local.is_dir():
+            return (local / "adapter_config.json").is_file()
+
+        return file_exists(self.model_name, "adapter_config.json", revision=self.revision, token=self.api_key)
+
+    def load(self) -> tuple[Any, Any, torch.device]:
+        """Download (or reuse the cached) weights and return `(model, tokenizer, device)`."""
+        device = self.resolve_device()
+        hub = {"revision": self.revision, "token": self.api_key}
+        # An adapter repo carries its own tokenizer, saved with any tokens the fine-tune added.
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name, **hub)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        if self.is_adapter():
+            base_model = self.base_model or PeftConfig.from_pretrained(self.model_name, **hub).base_model_name_or_path
+            logger.info(f"{self.model_name}: loading adapter over {base_model} on {device}.")
+            base = AutoModelForCausalLM.from_pretrained(base_model, dtype=self.dtype, token=self.api_key)
+            model = PeftModel.from_pretrained(base, self.model_name, **hub)
+        else:
+            logger.info(f"{self.model_name}: loading on {device}.")
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype=self.dtype, **hub)
+
+        model.to(device)
+        model.eval()
+        return model, tokenizer, device
+
+    def _call(self, prompt: str, **kwargs: Any) -> str:
+        messages = [{"role": "user", "content": str(prompt)}]
+        system = kwargs.get("system", self.system)
+        if system:
+            messages.insert(0, {"role": "system", "content": system})
+
+        text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = self.tokenizer(text, return_tensors="pt").to(self.torch_device)
+        max_new_tokens = int(kwargs.get("max_tokens", self.max_tokens))
+
+        options = self.optional_arguments('temperature', **kwargs)
+        do_sample = kwargs.get("do_sample", self.do_sample)
+        if do_sample is None:
+            do_sample = bool(options.get("temperature"))
+        if not do_sample:  # greedy decoding ignores these, and transformers warns when they are passed
+            for name in ('temperature', 'top_p', 'top_k'):
+                options.pop(name, None)
+
+        seed = kwargs.get("seed", self.seed)
+        if seed is not None:
+            torch.manual_seed(seed)
+
+        with torch.inference_mode():
+            output_ids = self.model_client.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=do_sample,
+                pad_token_id=self.tokenizer.pad_token_id,
+                **options,
+            )
+
+        reply_ids = output_ids[0, inputs["input_ids"].shape[1]:]
+        # Nothing reports a finish reason here, so it is read off the output: a reply that used the
+        # whole budget without ending on an end-of-sequence token was cut off.
+        ended = len(reply_ids) > 0 and int(reply_ids[-1]) in self.eos_token_ids()
+        stop_reason = "length" if len(reply_ids) >= max_new_tokens and not ended else "stop"
+        usage = SimpleNamespace(prompt_tokens=inputs["input_ids"].shape[1], completion_tokens=len(reply_ids))
+        self.log_response(stop_reason, usage)
+
+        return self.tokenizer.decode(reply_ids, skip_special_tokens=True).strip()
+
+    def eos_token_ids(self) -> set[int]:
+        """Every token that ends a reply. Chat models often have several: Qwen stops on `<|im_end|>` too."""
+        eos = getattr(self.model_client.generation_config, "eos_token_id", None)
+        ids = eos if isinstance(eos, (list, tuple)) else [eos]
+        return {int(i) for i in (*ids, self.tokenizer.eos_token_id) if i is not None}
 
 
 class ClaudeLLM(BaseLLM):

@@ -159,7 +159,7 @@ class BaseAgent:
             kwargs.setdefault("tools", self.toolbox.schemas_for(self.llm))
             return self._generate(prompt, **kwargs)
 
-    def run_with_tools(self, llm: BaseLLM, prompt: str, max_rounds: int = 8, **kwargs: Any) -> str:
+    def run_with_tools(self, llm: BaseLLM, prompt: str, max_rounds: int = 8, retun_with_tools: bool = False, **kwargs: Any) -> str:
         """Drive the ask → execute → answer loop until the model stops asking for tools.
 
         The model gets the tools in its own dialect, and whatever it asks for is executed here and fed
