@@ -1,6 +1,8 @@
 
+import hashlib
 import json
 import random
+import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -13,7 +15,6 @@ import anthropic
 import torch
 from openai import OpenAI
 from mistralai.client import Mistral
-from peft import PeftConfig, PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 from huggingface_hub import InferenceClient, file_exists
 from google import genai
@@ -46,6 +47,14 @@ class ToolCall:
     id: str  # the provider's id for this call, needed to match the result back to it
     name: str
     arguments: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class GeneratedTurn:
+    """One reply generated in-process, already split into what it said and the tools it asked for."""
+
+    text: str
+    calls: list[ToolCall] = field(default_factory=list)
 
 
 @dataclass
@@ -82,6 +91,83 @@ def as_tool_content(result: Any) -> str:
         f"... [truncated: {len(rendered) - MAX_TOOL_RESULT_CHARS} more characters. "
         "Call the tool again with narrower arguments if you need the rest.]"
     )
+
+
+def tool_arguments(raw: Any, name: str) -> dict[str, Any]:
+    """A call's arguments as a dict, whether they arrived as a JSON string or already decoded.
+
+    OpenAI sends a string. TGI-backed Hugging Face providers and Mistral can send the object itself,
+    which `json.loads` rejects, so reading only the string form ran those tools with no arguments at all.
+    """
+    if isinstance(raw, dict):
+        return raw
+
+    try:
+        arguments = json.loads(raw or "{}")
+    except (TypeError, ValueError):  # a malformed argument string is the model's error to fix
+        logger.warning(f"{name} was called with unparseable arguments; passing none.")
+        return {}
+
+    return arguments if isinstance(arguments, dict) else {}
+
+
+def json_or_none(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        return None
+
+
+# `<tool_call>{"name": ..., "arguments": {...}}</tool_call>` is how Qwen, Hermes and most fine-tunes of
+# them write a call. The closing tag is optional because a reply cut off by `max_tokens` loses it.
+TOOL_CALL_TAG = re.compile(r"<tool_call>\s*(.*?)\s*(?:</tool_call>|\Z)", re.S)
+
+
+def text_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
+    """Pull out the tool calls a model wrote into its reply as text; return the text left over and the calls.
+
+    A model run in-process has nothing in between to parse its calls out, and some providers behind the
+    Hugging Face router pass the raw text through as well. Two shapes are recognised: calls wrapped in
+    `<tool_call>` tags (Qwen, Hermes), and a reply that is nothing but a JSON call or a list of them
+    (Llama 3). A reply with neither comes back as it was, with no calls.
+
+    A call's id is derived from its position and content, so reading the same reply twice gives the same
+    ids. The assistant turn and the tool results are built separately, and they have to agree.
+    """
+    blocks = TOOL_CALL_TAG.findall(text)
+    if blocks:
+        payloads = [json_or_none(block) for block in blocks]
+        remaining = TOOL_CALL_TAG.sub("", text).strip()
+    else:
+        # Untagged, a call has to carry its arguments key too: a JSON answer like `{"name": "Ada"}` is
+        # not a request to run a tool called Ada.
+        whole = json_or_none(text.strip())
+        payloads = [
+            payload for payload in (whole if isinstance(whole, list) else [whole])
+            if isinstance(payload, dict) and ("arguments" in payload or "parameters" in payload)
+        ]
+        remaining = ""
+
+    calls = []
+    for position, payload in enumerate(payloads):
+        if not isinstance(payload, dict) or not payload.get("name"):
+            continue
+
+        name = str(payload["name"])
+        raw = payload.get("arguments", payload.get("parameters"))
+        fingerprint = f"{position}:{name}:{json.dumps(raw, sort_keys=True, default=str)}"
+        calls.append(ToolCall(
+            id=hashlib.sha1(fingerprint.encode()).hexdigest()[:9],  # 9 characters, as Mistral requires
+            name=name,
+            arguments=tool_arguments(raw, name),
+        ))
+
+    if not calls:
+        if blocks:
+            logger.warning("The model wrote a <tool_call> that could not be parsed; reading it as text.")
+        return text.strip(), []
+
+    return remaining, calls
 
 
 class BaseLLM(LLMConfigs):
@@ -315,37 +401,40 @@ class OpenAIToolDialect:
     """The tool-use message shapes every OpenAI-compatible caller shares.
 
     OpenAI, Grok, Ollama, Mistral and the Hugging Face Inference API all speak the same dialect here: a
-    response carries `choices[0].message.tool_calls`, each call's arguments arrive as a JSON *string*,
-    and each result goes back as its own `{"role": "tool"}` message keyed by `tool_call_id`. Only the
-    method used to send a request differs between them, and that stays in each caller's `converse`.
+    response carries `choices[0].message.tool_calls`, each call's arguments arrive as a JSON string
+    (or, from some servers, the decoded object), and each result goes back as its own `{"role": "tool"}`
+    message keyed by `tool_call_id`. Only the method used to send a request differs between them, and
+    that stays in each caller's `converse`.
     """
 
     runs_tools = True
 
     def read_turn(self, response: Any) -> tuple[str, list[ToolCall]]:
         message = response.choices[0].message
-        calls = []
-        for call in (getattr(message, "tool_calls", None) or []):
-            try:
-                arguments = json.loads(call.function.arguments or "{}")
-            except (TypeError, ValueError):  # a malformed argument string is the model's error to fix
-                logger.warning(f"{call.function.name} was called with unparseable arguments; passing none.")
-                arguments = {}
-            calls.append(ToolCall(id=call.id, name=call.function.name, arguments=arguments))
-
+        calls = [
+            ToolCall(
+                # Not every OpenAI-compatible server sends an id, and the result is matched back by it.
+                id=call.id or f"{call.function.name}-{position}",
+                name=call.function.name,
+                arguments=tool_arguments(call.function.arguments, call.function.name),
+            )
+            for position, call in enumerate(getattr(message, "tool_calls", None) or [])
+        ]
         return str(message.content or "").strip(), calls
 
     def assistant_turn(self, response: Any) -> dict[str, Any]:
-        message = response.choices[0].message
-        turn: dict[str, Any] = {"role": "assistant", "content": message.content or ""}
-        if getattr(message, "tool_calls", None):
+        # Rebuilt from `read_turn`, so the ids here are the ones the tool results answer. The arguments
+        # go back as the JSON string the API defines them as, whichever form they arrived in.
+        text, calls = self.read_turn(response)
+        turn: dict[str, Any] = {"role": "assistant", "content": text}
+        if calls:
             turn["tool_calls"] = [
                 {
                     "id": call.id,
                     "type": "function",
-                    "function": {"name": call.function.name, "arguments": call.function.arguments},
+                    "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
                 }
-                for call in message.tool_calls
+                for call in calls
             ]
         return turn
 
@@ -403,7 +492,15 @@ class HuggingFaceInferenceLLM(OpenAIToolDialect, BaseLLM):
         self.log_response(
             getattr(response.choices[0], "finish_reason", None), getattr(response, "usage", None)
         )
-        return str(response.choices[0].message.content or "").strip()
+
+        message = response.choices[0].message
+        if getattr(message, "tool_calls", None):  # see the note in ClaudeLLM._call
+            logger.warning(
+                f"{self.model_name} stopped to call {[call.function.name for call in message.tool_calls]}, "
+                "which this caller does not run — the text below is only what it said before asking."
+            )
+
+        return str(message.content or "").strip()
 
     def converse(self, messages: list[Any], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> Any:
         response = self.request(
@@ -417,6 +514,16 @@ class HuggingFaceInferenceLLM(OpenAIToolDialect, BaseLLM):
             getattr(response.choices[0], "finish_reason", None), getattr(response, "usage", None)
         )
         return response
+
+    def read_turn(self, response: Any) -> tuple[str, list[ToolCall]]:
+        text, calls = super().read_turn(response)
+        if calls:
+            return text, calls
+
+        # Whether a call comes back structured depends on the provider behind the router parsing it out
+        # of the model's output. One that doesn't hands back the model's own `<tool_call>` text, which
+        # would otherwise read as the final answer and end the loop with the tool never run.
+        return text_tool_calls(text)
 
 
 class HuggingFaceLocalLLM(BaseLLM):
@@ -433,6 +540,11 @@ class HuggingFaceLocalLLM(BaseLLM):
 
     With no `temperature` (or 0) decoding is greedy, so the same prompt gets the same answer. That is
     how the adapter is evaluated. Give a `temperature` to sample instead.
+
+    Tools run through the same loop as every other caller. They are offered through the model's chat
+    template, and the `<tool_call>` (or bare JSON) calls it writes back are parsed out of its reply. That
+    works only as well as the model was trained to write them: stock Qwen2.5 does, but a fine-tune whose
+    data had no tool calls in it usually stops.
 
     Extra params: `revision`, `base_model`, `device`, `dtype`, `system`, `top_p`, `top_k`,
     `repetition_penalty`, `do_sample`, `seed`.
@@ -502,6 +614,14 @@ class HuggingFaceLocalLLM(BaseLLM):
             tokenizer.pad_token = tokenizer.eos_token
 
         if self.is_adapter():
+            # Imported here rather than at the top so no other caller needs peft installed.
+            try:
+                from peft import PeftConfig, PeftModel
+            except ImportError as error:
+                raise ImportError(
+                    f"{self.model_name} is a PEFT adapter, and loading one needs peft: `pip install peft`."
+                ) from error
+
             base_model = self.base_model or PeftConfig.from_pretrained(self.model_name, **hub).base_model_name_or_path
             logger.info(f"{self.model_name}: loading adapter over {base_model} on {device}.")
             base = AutoModelForCausalLM.from_pretrained(base_model, dtype=self.dtype, token=self.api_key)
@@ -515,12 +635,34 @@ class HuggingFaceLocalLLM(BaseLLM):
         return model, tokenizer, device
 
     def _call(self, prompt: str, **kwargs: Any) -> str:
-        messages = [{"role": "user", "content": str(prompt)}]
-        system = kwargs.get("system", self.system)
-        if system:
-            messages.insert(0, {"role": "system", "content": system})
+        tools = kwargs.pop("tools", None) or self.tools
+        turn = self.converse([{"role": "user", "content": str(prompt)}], tools=tools, **kwargs)
+        if turn.calls:  # see the note in ClaudeLLM._call
+            logger.warning(
+                f"{self.model_name} stopped to call {[call.name for call in turn.calls]}, which this "
+                "caller does not run — the text below is only what it said before asking."
+            )
 
-        text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        return turn.text
+
+    # ---- tool-use round trip -----------------------------------------------------------------------
+    # There is no server here to parse a call out of the reply, so `converse` does it. The tools go into
+    # the prompt through the model's own chat template, and the calls it writes back as text are read
+    # out of the reply. The messages keep the OpenAI shapes chat templates are written for, with one
+    # difference: arguments stay a dict. Templates serialise them themselves (`| tojson`), so a string
+    # would reach the model double-encoded.
+    runs_tools = True
+
+    def converse(
+        self, messages: list[Any], tools: list[dict[str, Any]] | None = None, **kwargs: Any
+    ) -> GeneratedTurn:
+        system = kwargs.get("system", self.system)
+        if system and messages and messages[0].get("role") != "system":
+            messages = [{"role": "system", "content": system}, *messages]
+
+        text = self.tokenizer.apply_chat_template(
+            messages, tools=tools or None, tokenize=False, add_generation_prompt=True
+        )
         inputs = self.tokenizer(text, return_tensors="pt").to(self.torch_device)
         max_new_tokens = int(kwargs.get("max_tokens", self.max_tokens))
 
@@ -551,9 +693,32 @@ class HuggingFaceLocalLLM(BaseLLM):
         ended = len(reply_ids) > 0 and int(reply_ids[-1]) in self.eos_token_ids()
         stop_reason = "length" if len(reply_ids) >= max_new_tokens and not ended else "stop"
         usage = SimpleNamespace(prompt_tokens=inputs["input_ids"].shape[1], completion_tokens=len(reply_ids))
-        self.log_response(stop_reason, usage)
 
-        return self.tokenizer.decode(reply_ids, skip_special_tokens=True).strip()
+        reply = self.tokenizer.decode(reply_ids, skip_special_tokens=True).strip()
+        # Only a reply to a prompt that offered tools is read for calls. Without tools, a JSON answer is
+        # just an answer.
+        reply, calls = text_tool_calls(reply) if tools else (reply, [])
+        self.log_response(stop_reason, usage, f", tool_calls={[call.name for call in calls]}" if calls else '')
+        return GeneratedTurn(text=reply, calls=calls)
+
+    def read_turn(self, response: GeneratedTurn) -> tuple[str, list[ToolCall]]:
+        return response.text, response.calls
+
+    def assistant_turn(self, response: GeneratedTurn) -> dict[str, Any]:
+        turn: dict[str, Any] = {"role": "assistant", "content": response.text}
+        if response.calls:
+            turn["tool_calls"] = [
+                {"id": call.id, "type": "function", "function": {"name": call.name, "arguments": call.arguments}}
+                for call in response.calls
+            ]
+        return turn
+
+    def tool_result_turns(self, results: list[tuple[ToolCall, Any]]) -> list[dict[str, Any]]:
+        # `name` goes alongside the id because some templates label a result by the tool it came from.
+        return [
+            {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": as_tool_content(result)}
+            for call, result in results
+        ]
 
     def eos_token_ids(self) -> set[int]:
         """Every token that ends a reply. Chat models often have several: Qwen stops on `<|im_end|>` too."""
