@@ -80,6 +80,10 @@ class LLMConfigs:
     tools: list[dict[str, str]] | None = None
     type: str = "generator" # options are "generator" or "retriever", "tool caller", "tool generator"
     mcp_servers: list[str] | None = None
+    # Provider-specific options passed to the caller's constructor — whatever that provider declares as
+    # its own params: `provider` for the Hugging Face router, `thinking_config` for Gemini, `top_p` for
+    # most. Anything here is the provider's vocabulary, not this config's, so nothing validates it.
+    settings: dict[str, Any] | None = None
 
 
 @dataclass
@@ -300,7 +304,8 @@ class Configs:
                     api_key=llm_cfg.get('api_key', ''),
                     type=llm_cfg.get('type', 'generator'),
                     tools=llm_cfg.get('tools', None),
-                    mcp_servers=llm_cfg.get('mcp_servers', None)
+                    mcp_servers=llm_cfg.get('mcp_servers', None),
+                    settings=llm_cfg.get('settings', None)
                 )
 
     def embeddings_configer(self):

@@ -22,6 +22,8 @@ llm_callers:  # `llms.<name>.model` provider prefix, or a `provider_hints` match
   mistral: models.llms.MistralLLM
   huggingface: models.llms.HuggingFaceInferenceLLM
   hf: models.llms.HuggingFaceInferenceLLM
+  huggingface_local: models.llms.HuggingFaceLocalLLM  # a Hub repo run in-process, PEFT adapters included
+  hf_local: models.llms.HuggingFaceLocalLLM
 
 
 embeddings_callers:

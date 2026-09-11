@@ -134,6 +134,7 @@ llms:
 | Mistral | `mistral` | `MistralLLM` |
 | Ollama (local) | `ollama` | `OllamaLLM` |
 | Hugging Face | `huggingface`, `hf` | `HuggingFaceInferenceLLM` |
+| Hugging Face (local) | `huggingface_local`, `hf_local` | `HuggingFaceLocalLLM`: downloads the repo and runs it with `transformers`. A PEFT adapter repo is loaded over its base model. No key needed for public repos |
 
 Provider-specific options (`top_p`, `thinking`, `response_format`, `stop`, …) are declared per caller in
 [models/llms.py](models/llms.py), and can be set with `--set key=value` on the CLI.
