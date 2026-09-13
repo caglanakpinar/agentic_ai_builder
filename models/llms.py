@@ -541,10 +541,30 @@ class HuggingFaceLocalLLM(BaseLLM):
     With no `temperature` (or 0) decoding is greedy, so the same prompt gets the same answer. That is
     how the adapter is evaluated. Give a `temperature` to sample instead.
 
-    Tools run through the same loop as every other caller. They are offered through the model's chat
-    template, and the `<tool_call>` (or bare JSON) calls it writes back are parsed out of its reply. That
-    works only as well as the model was trained to write them: stock Qwen2.5 does, but a fine-tune whose
-    data had no tool calls in it usually stops.
+    Tools run through the same loop as every other caller: they are offered through the model's chat
+    template, and the `<tool_call>` (or bare JSON) calls it writes back are parsed out of its reply. How
+    well that works is the model's doing, not this caller's. Stock Qwen2.5 writes them, and so does a
+    fine-tune trained on them — `Caglana/qwen0.5b-tinylora-ds-assistant` from its
+    `v6-layer-lora-14250-tools` revision on, which is the worked example:
+
+        llms:
+          ds_assistant:
+            model: "hf_local/Caglana/qwen0.5b-tinylora-ds-assistant"
+            max_tokens: 512
+            settings:
+              revision: "v6-layer-lora-14250-tools"
+              # That adapter only calls tools reliably under the system prompt it was trained with.
+              # `LayerLoraAdapterHuggingFaceLLM` below carries that text, so `hf_layer_lora`
+              # is the prefix to name for it — this one leaves the system prompt to the config.
+              system: "You are a senior data scientist. You answer questions about data engineering, ..."
+
+    Two things that example is honest about. A fine-tune whose training data had no tool calls in it
+    stops calling them at all, which the same repo's earlier `v5-layer-lora-7500` revision does. And a
+    0.5B model that does call them is still unreliable: it answers one phrasing with a call and the next
+    with a question, and its final answer can carry detail the tool result never returned.
+
+    Loading an adapter needs `peft` (`pip install peft`); it is not a dependency of this package,
+    since no other caller here uses one.
 
     Extra params: `revision`, `base_model`, `device`, `dtype`, `system`, `top_p`, `top_k`,
     `repetition_penalty`, `do_sample`, `seed`.
@@ -725,6 +745,194 @@ class HuggingFaceLocalLLM(BaseLLM):
         eos = getattr(self.model_client.generation_config, "eos_token_id", None)
         ids = eos if isinstance(eos, (list, tuple)) else [eos]
         return {int(i) for i in (*ids, self.tokenizer.eos_token_id) if i is not None}
+
+
+class LayerLoraAdapterHuggingFaceLLM(HuggingFaceLocalLLM):
+    """A layer-scoped LoRA adapter — the fine-tune trained by `qwen_customized_with_tiny_lora`.
+
+    A *layer-LoRA* is an ordinary LoRA whose update is installed on the attention projections of a
+    chosen subset of transformer layers, with every other layer left at its base weights. On the Hub
+    that is still a `peft_type: LORA` adapter, so `hf_local` loads it — what this caller adds is the
+    two things that decide whether the fine-tune is actually the thing answering:
+
+    **The system prompt it was trained under.** Every record in that corpus carries the same one, so
+    the adapter has never seen a turn without it. `system` below is that text, and it is the default
+    rather than something a config has to remember: given no system prompt the model drifts back
+    towards the base model's register, and on the tool-trained revisions it tends to ask a question
+    back instead of calling the tool. Set `system: null` to send no system prompt at all.
+
+    **A check that the adapter is actually changing the model.** The failure this is for is silent:
+    a LoRA's `lora_B` is zero-initialised, so an adapter saved before it trained — or a checkpoint
+    whose weights did not survive being copied — computes an update of exactly zero and answers
+    identically to the base model, under the fine-tune's name, with no error anywhere. The layer
+    scope is checked alongside it as a backstop (recent PEFT raises on its own when
+    `layers_to_transform` names a layer the base model does not have; older versions matched nothing
+    and carried on). Both run once per distinct set of weights, and the layers the adapter reached
+    are logged either way — which is also how you confirm the revision you loaded is the one you
+    meant, since the layer scope is the thing that differs between them.
+
+    `model_name` is a Hub repo (`Caglana/qwen0.5b-tinylora-ds-assistant`), an adapter directory, or
+    the run directory a training run wrote — `outputs/sft-layer-lora`, which holds `adapter/` and
+    `checkpoint-N/` rather than an adapter at its top level. A run directory resolves the way
+    `eval.sh` documents: the final `adapter/` once SFT has completed, else the highest-numbered
+    `checkpoint-N/` while a run is still in progress.
+
+        llms:
+          ds_assistant:
+            model: "hf_layer_lora/Caglana/qwen0.5b-tinylora-ds-assistant"
+            max_tokens: 512
+            settings:
+              # the tool-calling revision; `main` is the one before it
+              revision: "v6-layer-lora-14250-tools"
+
+          # the same adapter straight out of a local training run, rather than off the Hub
+          ds_assistant_local:
+            model: "hf_layer_lora/outputs/sft-layer-lora"
+
+    Tools work as they do for any `hf_local` caller — offered through the chat template, and the
+    `<tool_call>` blocks the reply carries parsed back out. That is the format the tool corpus was
+    written in, so the two agree exactly. It is still a 0.5B model: see the note in
+    `HuggingFaceLocalLLM` about how unreliable that makes it.
+
+    Extra params: everything `HuggingFaceLocalLLM` takes.
+    """
+
+    # `data/synthetic/build.py` in the training project, where it is attached to every SFT record.
+    # Reproduced rather than imported: this repo does not depend on that one, and the string is what
+    # the adapter was trained against, so it is part of how the weights are called correctly.
+    system: str | None = (
+        "You are a senior data scientist. You answer questions about data engineering, feature "
+        "engineering, statistics, machine learning and visualisation, and you write working code when "
+        "code is what the question calls for. Be direct and concrete: name the trade-off, name the "
+        "failure mode, and say what to check. When you write code, give a short explanation, one "
+        "runnable block, and a note on what usually goes wrong."
+    )
+
+    # Weights already checked, keyed as `HuggingFaceLocalLLM.loaded` is. The check walks the built
+    # model, so it costs nothing to repeat — but it would log the same line for every agent sharing
+    # one adapter, and the answer cannot change between them.
+    checked: set[tuple[Any, ...]] = set()
+
+    def _initialize_model(self, **kwargs: Any) -> None:
+        # Before `super()`, which keys the shared weight cache on `model_name`: resolving after it
+        # would cache one run directory under several names, or miss a hit on the adapter itself.
+        self.model_name = self.adapter_directory(self.model_name)
+        super()._initialize_model(**kwargs)
+
+        key = (self.model_name, self.revision, self.base_model, self.device, self.dtype)
+        if key not in self.checked:
+            self.verify_adapter()
+            self.checked.add(key)
+
+    @staticmethod
+    def adapter_directory(model_name: str) -> str:
+        """Resolve a training run directory to the adapter inside it; pass anything else through.
+
+        A Hub repo id is not a path and is returned untouched, as is a directory that is itself an
+        adapter. What this is for is `outputs/sft-layer-lora` — a run directory, which holds
+        `adapter/` and `checkpoint-N/` and no `adapter_config.json` of its own, so naming it
+        directly fails in `transformers` with an error about a missing repo rather than about the
+        directory being one level too high.
+        """
+        run = Path(model_name)
+        if not run.is_dir() or (run / "adapter_config.json").is_file():
+            return model_name
+
+        final = run / "adapter"
+        if (final / "adapter_config.json").is_file():
+            return str(final)
+
+        # Ordered by step number rather than mtime: a directory copied or restored out of order
+        # still resolves to the checkpoint that trained longest.
+        checkpoints = sorted(
+            (
+                path for path in run.glob("checkpoint-*")
+                if path.name.removeprefix("checkpoint-").isdigit()
+                and (path / "adapter_config.json").is_file()
+            ),
+            key=lambda path: int(path.name.removeprefix("checkpoint-")),
+        )
+        if not checkpoints:
+            raise FileNotFoundError(
+                f"{run} holds no adapter: it has neither an `adapter/` directory (written when a "
+                "training run completes) nor a `checkpoint-N/` one. Name the adapter directory "
+                "itself, or a Hub repo id."
+            )
+
+        logger.info(f"{run}: no final adapter/ yet; loading {checkpoints[-1].name}.")
+        return str(checkpoints[-1])
+
+    def adapted_layers(self) -> dict[int, set[str]]:
+        """Which transformer layers carry an adapter module, read off the model that was built.
+
+        Reported rather than taken from the config, because the config is exactly what can be wrong:
+        this walks the loaded model and finds the modules PEFT actually wrapped.
+        """
+        from peft.tuners.tuners_utils import BaseTunerLayer
+
+        config = getattr(self.model_client, "peft_config", {}).get("default", None)
+        pattern = getattr(config, "layers_pattern", None) or "layers"
+        adapted: dict[int, set[str]] = {}
+        for name, module in self.model_client.named_modules():
+            if not isinstance(module, BaseTunerLayer):
+                continue
+
+            # `base_model.model.model.layers.21.self_attn.q_proj` -> layer 21, `q_proj`. A module
+            # outside the decoder stack has no index and is not what the layer scope is about.
+            parts = name.split(".")
+            for position, part in enumerate(parts[:-1]):
+                if part == pattern and parts[position + 1].isdigit():
+                    adapted.setdefault(int(parts[position + 1]), set()).add(parts[-1])
+                    break
+
+        return adapted
+
+    def verify_adapter(self) -> None:
+        """Raise unless the adapter is changing the model, and log the layers it reached."""
+        config = getattr(self.model_client, "peft_config", {}).get("default", None)
+        if config is None:  # a full model, loaded through this caller by mistake
+            logger.warning(
+                f"{self.model_name} is not an adapter at all, so there is no layer scope to check — "
+                "`hf_local` is the caller for a full model."
+            )
+            return
+
+        adapted = self.adapted_layers()
+        if not adapted:
+            scope = getattr(config, "layers_to_transform", None)
+            raise ValueError(
+                f"{self.model_name} loaded, but its adapter reached no transformer layer, so this "
+                "is the base model answering under the adapter's name. Its config asks for layers "
+                f"{scope} and modules {sorted(getattr(config, 'target_modules', None) or [])}, "
+                "matched by module name against the base model "
+                f"({self.base_model or getattr(config, 'base_model_name_or_path', '?')}). Check them "
+                "against the base model this is loaded over."
+            )
+
+        # `ΔW = (α / r) · B A`, and B is the zero-initialised half — so an untrained or empty
+        # adapter is not a small update, it is exactly no update. Reading B alone is enough and is
+        # the only part that can be all-zero in a trained one; A is randomly initialised either way.
+        updates = [
+            weights for name, weights in self.model_client.named_parameters() if ".lora_B." in name
+        ]
+        if updates and not any(weights.any() for weights in updates):
+            raise ValueError(
+                f"{self.model_name} loaded, but every lora_B matrix in it is zero, so its update is "
+                "identically zero and it answers exactly as the base model does. That is an adapter "
+                "saved before it trained, or one whose weights did not survive being copied — check "
+                "the checkpoint this was resolved to rather than the config."
+            )
+
+        if getattr(config, "layers_to_transform", None) is None:
+            logger.info(
+                f"{self.model_name} adapts every layer — a plain LoRA rather than a layer-scoped one."
+            )
+
+        peft_type = str(getattr(getattr(config, "peft_type", None), "value", None) or "?")
+        layers = ", ".join(
+            f"{index}: {'/'.join(sorted(modules))}" for index, modules in sorted(adapted.items())
+        )
+        logger.info(f"{self.model_name}: {peft_type} adapter applied to layer {layers}.")
 
 
 class ClaudeLLM(BaseLLM):

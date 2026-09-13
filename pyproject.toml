@@ -26,6 +26,9 @@ agentic-ai = "cli:cli"
 # Database drivers are optional: db_connector imports them lazily, so you only install the engines you
 # actually use, e.g. `poetry install --extras "postgres chroma"` or `--extras all`.
 [project.optional-dependencies]
+# models/llms.py — PEFT adapters for the in-process Hugging Face callers, imported lazily so no
+# other caller needs it: `poetry install --extras peft`.
+peft = ["peft (>=0.17.0,<1.0.0)"]
 # db_connector/tabular.py
 postgres = ["psycopg2-binary (>=2.9.0,<3.0.0)"]
 mysql = ["pymysql (>=1.1.0,<2.0.0)"]
@@ -46,6 +49,7 @@ opensearch = ["opensearch-py (>=2.4.0,<4.0.0)"]
 meilisearch = ["meilisearch (>=0.31.0,<1.0.0)"]
 typesense = ["typesense (>=0.21.0,<2.0.0)"]
 all = [
+    "peft (>=0.17.0,<1.0.0)",
     "psycopg2-binary (>=2.9.0,<3.0.0)",
     "pymysql (>=1.1.0,<2.0.0)",
     "google-cloud-bigquery (>=3.0.0,<4.0.0)",
