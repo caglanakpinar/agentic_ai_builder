@@ -135,6 +135,7 @@ llms:
 | Ollama (local) | `ollama` | `OllamaLLM` |
 | Hugging Face | `huggingface`, `hf` | `HuggingFaceInferenceLLM` |
 | Hugging Face (local) | `huggingface_local`, `hf_local` | `HuggingFaceLocalLLM`: downloads the repo and runs it with `transformers`. A PEFT adapter repo is loaded over its base model (needs `pip install peft`). Tool calls are parsed from the model's `<tool_call>` replies. No key needed for public repos |
+| Layer-LoRA adapter (local) | `layer_lora`, `hf_layer_lora` | `LayerLoraAdapterHuggingFaceLLM`: the same in-process load for a layer-scoped LoRA fine-tune. Defaults `system` to the prompt that adapter was trained under, resolves a training run directory (`outputs/sft-layer-lora`) to the adapter inside it, and refuses to start when the adapter's update is zero — which would silently serve the base model |
 
 Provider-specific options (`top_p`, `thinking`, `response_format`, `stop`, …) are declared per caller in
 [models/llms.py](models/llms.py), and can be set with `--set key=value` on the CLI.
